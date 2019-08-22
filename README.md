@@ -4,13 +4,13 @@
 
 **Can you add other indicators or timeframes to the bot?**
 
-Unfortunately no, TradingView doesn’t allow third-party indicators added to the chart widget that Alpha is using. All built-in indicators and timeframes are already supported.
+Unfortunately no, TradingView doesn't allow third-party indicators added to the chart widget that Alpha is using. All built-in indicators and timeframes are already supported.
 
 **Can indicator parameters be changed?**
 
-Unfortunately no, TradingView doesn’t allow that functionality in the chart widget that Alpha is using.
+Unfortunately no, TradingView doesn't allow that functionality in the chart widget that Alpha is using.
 
-**Why doesn’t Alpha use TradingView Premium?**
+**Why doesn't Alpha use TradingView Premium?**
 
 TradingView Premium is not available for the widget used to make Alpha work.
 
@@ -27,15 +27,15 @@ Yes, you can increase the limit by purchasing Alpha premium (personal)
 
 ## For Server Owners
 
-**Alpha doesn’t post charts in the chat. What to do?**
+**Alpha doesn't post charts in the chat. What to do?**
 
-Check the permissions given to Alpha and make sure it’s allowed to read messages, send messages and send attachments.
+Check the permissions given to Alpha and make sure it's allowed to read messages, send messages, and send attachments.
 
 **Alpha causes server spam.**
 
 Your only option would be to enable auto-delete mode. To do that, type `a autodelete enable` in your server (administrator privileges are required). If you want to disable it, type `a autodelete disable`.
 
-**I don’t want Google Assistant functionality. Can I disable it?**
+**I don't want Google Assistant functionality. Can I disable it?**
 
 Yes, type `a assistant disable` in your server (administrator privileges are required). If you want to enable it again, type `a assistant enable`.
 
