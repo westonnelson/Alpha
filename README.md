@@ -15,6 +15,7 @@ Unfortunately no, TradingView doesn't allow that functionality in the chart widg
 TradingView Premium is not available for the widget used to make Alpha work.
 
 **I'm reaching the chart rate limit. Can I increase it?**
+
 Yes, you can increase the limit by purchasing Alpha premium (personal)
 
 **Why does Alpha have specific permission?**
