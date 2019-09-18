@@ -13,33 +13,20 @@ class Utils(object):
 		elif exchange.id in ["bitfinex2"]: countingMode = dtp.SIGNIFICANT_DIGITS
 		else: countingMode = dtp.DECIMAL_PLACES
 
-		levelText = dtp.decimal_to_precision(level, precision=precision, counting_mode=countingMode, padding_mode=dtp.PAD_WITH_ZERO)
-		return Utils.strip_redundant_traling_zeros(exchange, "{:,.18f}".format(float(levelText)), precision)
+		price = float(dtp.decimal_to_precision(level, precision=precision, counting_mode=countingMode, padding_mode=dtp.PAD_WITH_ZERO))
+		return ("{:,.%df}" % Utils.num_of_decimal_places(exchange, price, precision)).format(price)
 
 	@staticmethod
-	def strip_redundant_traling_zeros(exchange, number, precision):
-		isCounting = False
-		i = 0
-
-		if exchange.id in ["bitmex"]: precision = Utils.num_of_decimal_places(precision)
-		elif exchange.id in ["bitfinex2"]: isCounting = True
-
-		newNumber = ""
-		for char in number:
-			newNumber += char
-			if char == ",": continue
-			elif char == ".": isCounting = True
-			elif isCounting:
-				i += 1
-				if i == precision: break
-		return newNumber
-
-	@staticmethod
-	def num_of_decimal_places(x):
-		s = str(x)
-		if not '.' in s:
-			return 0
-		return len(s) - s.index('.') - 1
+	def num_of_decimal_places(exchange, price, precision):
+		if exchange.id in ["bitmex"]:
+			s = str(precision)
+			if "e" in s: return int(s.split("e-")[1])
+			elif not '.' in s: return 0
+			else: return len(s) - s.index('.') - 1
+		elif exchange.id in ["bitfinex2"]:
+			return precision - len(str(int(price)))
+		else:
+			return precision
 
 	@staticmethod
 	def get_accepted_timeframes():
@@ -86,7 +73,24 @@ class Utils(object):
 		settingsTemplate = {
 			"premium": {"subscribed": False, "hadTrial": False, "hadWarning": False, "timestamp": 0, "date": "", "plan": 0},
 			"presets": [],
-			"forwarding": {"general": []}
+			"trading": {
+				"open_orders": [],
+				"history": []
+			},
+			"paper_trading": {
+				"free_balance": {
+					"binance": {
+						"USDT": 1000,
+						"BTC": 0
+					},
+					"bittrex": {
+						"USD": 1000,
+						"BTC": 0
+					}
+				},
+				"open_orders": [],
+				"history": []
+			}
 		}
 
 		if settings is None: settings = {}
@@ -142,44 +146,48 @@ class Utils(object):
 		return settings, "Something went wrong..."
 
 	@staticmethod
-	def shortcuts(r, isCommand):
+	def shortcuts(r, isCommand, allowsShortcuts):
 		raw = r
-		if r in ["!help", "?help"]: raw = "a help"
-		elif r in ["!invite", "?invite"]: raw = "a invite"
-		elif r in ["mex", "mex xbt", "mex btc"]: raw = "p xbt"
-		elif r in ["mex eth"]: raw = "p ethusd mex"
-		elif r in ["mex ltc"]: raw = "p ltc mex"
-		elif r in ["mex bch"]: raw = "p bch mex"
-		elif r in ["mex eos"]: raw = "p eos mex"
-		elif r in ["mex xrp"]: raw = "p xrp mex"
-		elif r in ["mex trx"]: raw = "p trx mex"
-		elif r in ["mex ada"]: raw = "p ada mex"
-		elif r in ["funding", "fun", "funding xbt", "fun xbt", "funding xbtusd", "fun xbtusd", "funding btc", "fun btc", "funding btcusd", "fun btcusd"]: raw = "p xbt funding"
-		elif r in ["funding", "fun", "funding eth", "fun eth", "funding ethusd", "fun ethusd"]: raw = "p ethusd mex funding"
-		elif r in ["funding eth", "fun eth"]: raw = "p xbt funding"
-		elif r in ["fut", "futs", "futures"]: raw = "p xbt futs"
-		elif r in ["prem", "prems", "premiums"]: raw = "p xbt prems"
-		elif r in ["finex"]: raw = "p btc bitfinex"
-		elif r in ["finex eth"]: raw = "p ethusd bitfinex"
-		elif r in ["finex ltc"]: raw = "p ltc bitfinex"
-		elif r in ["finex bch"]: raw = "p bch bitfinex"
-		elif r in ["finex eos"]: raw = "p eos bitfinex"
-		elif r in ["finex xrp"]: raw = "p xrp bitfinex"
-		elif r in ["finex trx"]: raw = "p trx bitfinex"
-		elif r in ["finex ada"]: raw = "p ada bitfinex"
-		elif r in ["coinbase"]: raw = "p btc cbp"
-		elif r in ["coinbase eth"]: raw = "p ethusd cbp"
-		elif r in ["coinbase ltc"]: raw = "p ltc cbp"
-		elif r in ["coinbase bch"]: raw = "p bch cbp"
-		elif r in ["coinbase zrx"]: raw = "p zrx cbp"
-		elif r in ["coinbase bat"]: raw = "p bat cbp"
-		elif r in ["coinbase zec"]: raw = "p zec cbp"
-		elif r in ["c internals", "c internal", "c int"]: raw = "c uvol-dvol w, tick, dvn-decn, pcc d line"
-		elif r in ["btc vol", "btc volatility"]: raw = "c bvol"
-		elif r in ["btc dom", "dom"]: raw = "c btc.d nv"
+
+		if allowsShortcuts:
+			if r in ["!help", "?help"]: raw = "a help"
+			elif r in ["!invite", "?invite"]: raw = "a invite"
+			elif r in ["mex", "mex xbt", "mex btc"]: raw = "p xbt"
+			elif r in ["mex eth"]: raw = "p ethusd mex"
+			elif r in ["mex ltc"]: raw = "p ltc mex"
+			elif r in ["mex bch"]: raw = "p bch mex"
+			elif r in ["mex eos"]: raw = "p eos mex"
+			elif r in ["mex xrp"]: raw = "p xrp mex"
+			elif r in ["mex trx"]: raw = "p trx mex"
+			elif r in ["mex ada"]: raw = "p ada mex"
+			elif r in ["funding", "fun", "funding xbt", "fun xbt", "funding xbtusd", "fun xbtusd", "funding btc", "fun btc", "funding btcusd", "fun btcusd"]: raw = "p xbt funding"
+			elif r in ["funding", "fun", "funding eth", "fun eth", "funding ethusd", "fun ethusd"]: raw = "p ethusd mex funding"
+			elif r in ["funding eth", "fun eth"]: raw = "p xbt funding"
+			elif r in ["fut", "futs", "futures"]: raw = "p xbt futs"
+			elif r in ["prem", "prems", "premiums"]: raw = "p xbt prems"
+			elif r in ["finex"]: raw = "p btc bitfinex"
+			elif r in ["finex eth"]: raw = "p ethusd bitfinex"
+			elif r in ["finex ltc"]: raw = "p ltc bitfinex"
+			elif r in ["finex bch"]: raw = "p bch bitfinex"
+			elif r in ["finex eos"]: raw = "p eos bitfinex"
+			elif r in ["finex xrp"]: raw = "p xrp bitfinex"
+			elif r in ["finex trx"]: raw = "p trx bitfinex"
+			elif r in ["finex ada"]: raw = "p ada bitfinex"
+			elif r in ["coinbase"]: raw = "p btc cbp"
+			elif r in ["coinbase eth"]: raw = "p ethusd cbp"
+			elif r in ["coinbase ltc"]: raw = "p ltc cbp"
+			elif r in ["coinbase bch"]: raw = "p bch cbp"
+			elif r in ["coinbase zrx"]: raw = "p zrx cbp"
+			elif r in ["coinbase bat"]: raw = "p bat cbp"
+			elif r in ["coinbase zec"]: raw = "p zec cbp"
+			elif r.startswith("$") and not r.startswith("$ "): raw = raw.replace("$", "mc ", 1)
+
+		if r in ["c internals", "c internal", "c int"]: raw = "c uvol-dvol w, tick, dvn-decn, pcc d line"
+		elif r in ["c btc vol"]: raw = "c bvol"
 		elif r in ["c mcap"]: raw = "c total nv"
 		elif r in ["c alt mcap"]: raw = "c total2 nv"
-		elif r in ["gi"]: raw = "c gi"
-		elif r in ["nvt"]: raw = "c nvt"
-		elif r.startswith("$") and not r.startswith("$ "): raw = raw.replace("$", "mc ", 1)
+		elif r in ["oi", "oi xbt"]: raw = "c xbt oi"
+		elif r in ["oi eth"]: raw = "c eth oi"
+		elif r in ["hmap"] or r.startswith("hmap, "): raw = raw.replace("hmap", "hmap price", 1)
+
 		return raw, r != raw or isCommand, r != raw

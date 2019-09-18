@@ -2,6 +2,7 @@ import os, os.path
 import sys
 import re
 import random
+import copy
 import json
 import time
 import datetime
@@ -41,11 +42,12 @@ from bot.helpers.logger import Logger as l
 from bot.helpers import constants
 
 from bot.assistant.base import AlphaAssistant
+from bot.engine.alerts import Alerts
 from bot.engine.presets import Presets
 from bot.engine.images import ImageProcessor
-from bot.engine.alerts import Alerts
 from bot.engine.coins import CoinParser
 from bot.engine.coingecko import CoinGeckoLink
+from bot.engine.trader import PaperTrader
 from bot.engine.fusion import Fusion
 
 try:
@@ -80,10 +82,11 @@ class Alpha(discord.AutoShardedClient):
 	isBotReady = False
 	dedicatedGuild = -1
 
+	alerts = Alerts()
 	imageProcessor = ImageProcessor()
 	coinParser = CoinParser()
 	coinGeckoLink = CoinGeckoLink()
-	alerts = Alerts()
+	paperTrader = PaperTrader()
 	fusion = Fusion()
 
 	statistics = {"c": 0, "alerts": 0, "p": 0, "v": 0, "d": 0, "hmap": 0, "mcap": 0, "mk": 0, "alpha": 0}
@@ -120,6 +123,7 @@ class Alpha(discord.AutoShardedClient):
 		self.coinGeckoLink.refresh_coingecko_coin_list()
 		self.fetch_settings()
 		self.update_fusion_queue()
+		self.server_ping()
 
 		try:
 			rawData = self.coinParser.exchanges["bitmex"].fetch_ohlcv(
@@ -172,7 +176,7 @@ class Alpha(discord.AutoShardedClient):
 				statisticsRef = db.document(u"alpha/statistics")
 				for i in range(5):
 					try:
-						statisticsRef.set(self.statistics)
+						statisticsRef.set(self.statistics, merge=True)
 						break
 					except Exception as e:
 						if i == 4: raise e
@@ -227,9 +231,9 @@ class Alpha(discord.AutoShardedClient):
 
 	def update_fusion_queue(self):
 		try:
-			instances = self.fusion.manage_load_distribution(client, self.coinParser.exchanges)
+			instances = self.fusion.manage_load_distribution(self.coinParser.exchanges)
 			if sys.platform == "linux":
-				try: db.document(u"fusion/instances").set(instances)
+				try: db.document(u"fusion/distribution").set(instances)
 				except: pass
 		except Exception as e:
 			exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -251,7 +255,7 @@ class Alpha(discord.AutoShardedClient):
 							except: pass
 							self.userProperties[userId]["premium"]["subscribed"] = False
 							self.userProperties[userId]["premium"]["hadWarning"] = False
-							fetchedSettingsRef.set(self.userProperties[userId])
+							fetchedSettingsRef.set(self.userProperties[userId], merge=True)
 							try:
 								recepient = client.get_user(userId)
 								await recepient.send("Your Alpha Premium subscription has expired")
@@ -260,7 +264,7 @@ class Alpha(discord.AutoShardedClient):
 						elif self.userProperties[userId]["premium"]["timestamp"] - 259200 < time.time() and not self.userProperties[userId]["premium"]["hadWarning"]:
 							recepient = client.get_user(userId)
 							self.userProperties[userId]["premium"]["hadWarning"] = True
-							fetchedSettingsRef.set(self.userProperties[userId])
+							fetchedSettingsRef.set(self.userProperties[userId], merge=True)
 							if recepient is not None:
 								try: await recepient.send("Your Alpha Premium subscription expires on {}".format(self.userProperties[userId]["premium"]["date"]))
 								except: pass
@@ -279,7 +283,7 @@ class Alpha(discord.AutoShardedClient):
 							except: pass
 							self.guildProperties[guildId]["premium"]["subscribed"] = False
 							self.guildProperties[guildId]["premium"]["hadWarning"] = False
-							fetchedSettingsRef.set(self.guildProperties[guildId])
+							fetchedSettingsRef.set(self.guildProperties[guildId], merge=True)
 							guild = client.get_guild(guildId)
 							for member in guild.members:
 								if member.guild_permissions.administrator:
@@ -288,7 +292,7 @@ class Alpha(discord.AutoShardedClient):
 						elif self.guildProperties[guildId]["premium"]["timestamp"] - 259200 < time.time() and not self.guildProperties[guildId]["premium"]["hadWarning"]:
 							guild = client.get_guild(guildId)
 							self.guildProperties[guildId]["premium"]["hadWarning"] = True
-							fetchedSettingsRef.set(self.guildProperties[guildId])
+							fetchedSettingsRef.set(self.guildProperties[guildId], merge=True)
 							if guild is not None:
 								for member in guild.members:
 									if member.guild_permissions.administrator:
@@ -309,7 +313,6 @@ class Alpha(discord.AutoShardedClient):
 			settingsRef = db.document(u"alpha/settings")
 			self.alphaSettings = settingsRef.get().to_dict()
 			strGuilds = []
-			await self.wait_for_chunked()
 			for guild in client.guilds:
 				strGuilds.append(guild.name)
 			guildsToRemove = []
@@ -323,14 +326,16 @@ class Alpha(discord.AutoShardedClient):
 			nicknames = []
 			for guild in client.guilds:
 				if guild.me is not None:
-					isBlaclisted = guild.name in self.alphaSettings["tosBlacklist"]
+					isBlacklisted = guild.name in self.alphaSettings["tosBlacklist"]
 					isWhitelisted = guild.name in self.alphaSettings["tosWhitelist"]
 
 					if guild.me.nick is not None:
-						if isBlaclisted:
+						if isBlacklisted:
 							if guild.me.nick == self.alphaSettings["tosBlacklist"][guild.name]:
 								if guild.me.guild_permissions.change_nickname:
-									try: await guild.me.edit(nick=None)
+									try:
+										await guild.me.edit(nick=None)
+										self.alphaSettings["tosBlacklist"].pop(guild.name)
 									except: pass
 								continue
 							else: self.alphaSettings["tosBlacklist"].pop(guild.name)
@@ -344,7 +349,7 @@ class Alpha(discord.AutoShardedClient):
 								nicknames.append("{}: **{}**".format(guild.name, guild.me.nick))
 								break
 					else:
-						if isBlaclisted: self.alphaSettings["tosBlacklist"].pop(guild.name)
+						if isBlacklisted: self.alphaSettings["tosBlacklist"].pop(guild.name)
 						if isWhitelisted: self.alphaSettings["tosWhitelist"].pop(guild.name)
 
 				for member in guild.members:
@@ -369,7 +374,7 @@ class Alpha(discord.AutoShardedClient):
 			except: pass
 
 			if sys.platform == "linux":
-				try: settingsRef.set(self.alphaSettings)
+				try: settingsRef.set(self.alphaSettings, merge=True)
 				except: pass
 		except asyncio.CancelledError: pass
 		except Exception as e:
@@ -393,8 +398,8 @@ class Alpha(discord.AutoShardedClient):
 					except: await asyncio.sleep(self.coinParser.exchanges["binance"].rateLimit / 1000 * 2)
 
 			if prices["BTC/USDT"] != 0 and prices["ETH/USDT"] != 0:
-				monthlyPremiumText = "__**F E A T U R E S**__\n\nWith Alpha premium you'll get access to price alerts, command presets, message forwarding service (currently not available), as well as increased rate limits.\n\n**Price alerts (beta)**\nWith price alerts, you are able to get instant notifications through Discord via direct messages whenever the price of supported coins crosses a certain level or when popular indicators reach a certain value.\n\n**Command presets**\nPresets allow you to quickly call commands you use most often, create indicator sets and more.\n\n**Other perks**\nThe package also comes with raised limits. Instead of 10 charts, you can request up to 30 charts per minute.\n\n__**P R I C I N G**__\nSubscription of $5/month or $50/year (17% off) in crypto.\nCurrent Bitcoin pricing: {:,.8f} BTC/month or {:,.8f} BTC/year.\nCurrent Ethereum pricing: {:,.8f} ETH/month or {:,.8f} ETH/year.\n\nPlease, contact <@!361916376069439490> for more details. All users are eligible for one month free trial. For server-wide premium subscription, check <#560475744258490369>.".format(5 / prices["BTC/USDT"], 50 / prices["BTC/USDT"], 5 / prices["ETH/USDT"], 50 / prices["ETH/USDT"])
-				annualPremiumText = "__**F E A T U R E S**__\n\nWith Alpha premium you'll get access to price alerts, command presets, message forwarding service (currently not available), a dedicated VPS, as well as increased rate limits. All premium features are available to all users across all servers with Alpha server-wide Premium\n\n**Personal and server-wide (coming soon) price alerts (beta)**\nWith price alerts, you are able to get instant notifications through Discord via direct messages whenever the price of supported coins crosses a certain level or when popular indicators reach a certain value. Server-wide price alers go a step further by alowing server owners to set price alerts for all users via a specified channel.\n\n**Personal and server-wide command presets**\nPresets allow you to quickly call commands you use most often, create indicator sets and more. Similarly to price alerts, server-wide command presets allow server owners to create presets available to all users in a server.\n\n**Dedicated VPS**\nA dedicated virtual private server will deliver cutting edge performance of Alpha in your discord server even during high load.\n\n**Other perks**\nThe package also comes with raised limits. Instead of 10 charts, you can request up to 30 charts per minute.\n\n__**P R I C I N G**__\nSubscription of $100/month or $1000/year (17% off) in crypto. A dedicated VPS can be purchased separately for $50/month.\nCurrent Bitcoin pricing: {:,.8f} BTC/month or {:,.8f} BTC/year.\nCurrent Ethereum pricing: {:,.8f} ETH/month or {:,.8f} ETH/year.\n\nPlease, contact <@!361916376069439490> for more details. All servers are eligible for one month free trial (dedicated VPS is not included). For personal premium subscription, check <#509428086979297320>".format(100 / prices["BTC/USDT"], 1000 / prices["BTC/USDT"], 100 / prices["ETH/USDT"], 1000 / prices["ETH/USDT"])
+				monthlyPremiumText = "__**F E A T U R E S**__\n\nWith Alpha premium you'll get access to price alerts, command presets, message forwarding service (currently not available), as well as increased rate limits.\n\n**Price alerts (beta)**\nWith price alerts, you are able to get instant notifications through Discord via direct messages whenever the price of supported coins crosses a certain level or when popular indicators reach a certain value.\n\n**Command presets**\nPresets allow you to quickly call commands you use most often, create indicator sets and more.\n\n**Other perks**\nThe package also comes with raised limits. Instead of 10 charts, you can request up to 30 charts per minute.\n\n__**P R I C I N G**__\nSubscription of $15/month or $150/year in crypto.\nCurrent Bitcoin pricing: {:,.8f} BTC/month or {:,.8f} BTC/year.\nCurrent Ethereum pricing: {:,.8f} ETH/month or {:,.8f} ETH/year.\n\nPlease, contact <@!361916376069439490> for more details. All users are eligible for one month free trial. For server-wide premium subscription, check <#560475744258490369>.".format(15 / prices["BTC/USDT"], 150 / prices["BTC/USDT"], 15 / prices["ETH/USDT"], 150 / prices["ETH/USDT"])
+				annualPremiumText = "__**F E A T U R E S**__\n\nWith Alpha premium you'll get access to price alerts, command presets, message forwarding service (currently not available), a dedicated VPS, as well as increased rate limits. All premium features are available to all users across all servers with Alpha server-wide Premium\n\n**Personal and server-wide (coming soon) price alerts (beta)**\nWith price alerts, you are able to get instant notifications through Discord via direct messages whenever the price of supported coins crosses a certain level or when popular indicators reach a certain value. Server-wide price alers go a step further by alowing server owners to set price alerts for all users via a specified channel.\n\n**Personal and server-wide command presets**\nPresets allow you to quickly call commands you use most often, create indicator sets and more. Similarly to price alerts, server-wide command presets allow server owners to create presets available to all users in a server.\n\n**Dedicated VPS**\nA dedicated virtual private server will deliver cutting edge performance of Alpha in your discord server even during high load.\n\n**Other perks**\nThe package also comes with raised limits. Instead of 10 charts, you can request up to 30 charts per minute.\n\n__**P R I C I N G**__\nSubscription of $100/month or $1000/year in crypto. A dedicated VPS can be purchased separately for $50/month.\nCurrent Bitcoin pricing: {:,.8f} BTC/month or {:,.8f} BTC/year.\nCurrent Ethereum pricing: {:,.8f} ETH/month or {:,.8f} ETH/year.\n\nPlease, contact <@!361916376069439490> for more details. All servers are eligible for one month free trial (dedicated VPS is not included). For personal premium subscription, check <#509428086979297320>".format(100 / prices["BTC/USDT"], 1000 / prices["BTC/USDT"], 100 / prices["ETH/USDT"], 1000 / prices["ETH/USDT"])
 
 				monthlyPremiumChannel = client.get_channel(509428086979297320)
 				annualPremiumChannel = client.get_channel(560475744258490369)
@@ -413,7 +418,7 @@ class Alpha(discord.AutoShardedClient):
 	async def update_system_status(self):
 		try:
 			statisticsRef = db.document(u"alpha/statistics")
-			statisticsRef.set(self.statistics)
+			statisticsRef.set(self.statistics, merge=True)
 
 			numOfCharts = "**{:,}** charts requested".format(self.statistics["c"] + self.statistics["hmap"])
 			numOfPrices = "**{:,}** prices pulled".format(self.statistics["d"] + self.statistics["p"] + self.statistics["v"])
@@ -427,19 +432,25 @@ class Alpha(discord.AutoShardedClient):
 			webpage = str(urllib.request.urlopen(req).read())
 			isDiscordWorking = "All Systems Operational" in webpage
 
-			statusText = "Discord: {}".format("**operational**" if isDiscordWorking else "**degraded performance**")
+			statusText = "Discord: **{}**\nAverage ping: **{:,.1f}** milliseconds\nProcessing **{:,.0f}** messages per minute".format("operational" if isDiscordWorking else "degraded performance", self.fusion.averagePing * 1000, self.fusion.averageMessages)
+			alphaText = "Alpha: **online**"
 
 			if sys.platform == "linux":
 				channel = client.get_channel(560884869899485233)
 				if self.statistics["c"] > 0 and sys.platform == "linux":
 					try:
-						statsMessage = await channel.fetch_message(612218930488147968)
+						statsMessage = await channel.fetch_message(615114371508731914)
 						await statsMessage.edit(content=statsText)
 					except: pass
 
 				try:
-					statusMessage = await channel.fetch_message(612218978240167941)
+					statusMessage = await channel.fetch_message(615119428899831878)
 					await statusMessage.edit(content=statusText)
+				except: pass
+
+				try:
+					alphaMessage = await channel.fetch_message(615137416780578819)
+					await alphaMessage.edit(content=alphaText)
 				except: pass
 		except asyncio.CancelledError: pass
 		except Exception as e:
@@ -501,7 +512,7 @@ class Alpha(discord.AutoShardedClient):
 
 	async def send_alerts(self):
 		try:
-			incomingAlertsChannel = client.get_channel(592019306934435856)
+			incomingAlertsChannel = client.get_channel(605419986164645889)
 			if sys.platform == "linux" and incomingAlertsChannel is not None:
 				alertMessages = await incomingAlertsChannel.history(limit=None).flatten()
 				for message in reversed(alertMessages):
@@ -523,17 +534,54 @@ class Alpha(discord.AutoShardedClient):
 			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
 			l.log("Warning", "timestamp: {}, debug info: {}, {}, line {}, description: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e))
 
+	def server_ping(self):
+		try:
+			if sys.platform == "linux":
+				for i in range(5):
+					try:
+						db.document(u'fusion/alpha').set({"lastUpdate": {"timestamp": time.time(), "time": datetime.datetime.now().strftime("%m. %d. %Y, %H:%M")}}, merge=True)
+						break
+					except Exception as e:
+						if i == 4:
+							exc_type, exc_obj, exc_tb = sys.exc_info()
+							fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+							l.log("Warning", "({}) debug info: {}, {}, line {}, description: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e))
+						else: time.sleep(1)
+
+			for i in range(5):
+				try:
+					instances = db.collection(u'fusion').stream()
+					for instance in instances:
+						num = str(instance.id)
+						if num.startswith("instance"):
+							num = int(str(instance.id).split("-")[-1])
+							instance = instance.to_dict()
+							if instance["lastUpdate"]["timestamp"] + 360 < time.time():
+								l.log("Warning", "timestamp: {}, description: Fusion instance {} is not responding".format(Utils.get_current_date(), num))
+					break
+				except Exception as e:
+					if i == 4:
+						exc_type, exc_obj, exc_tb = sys.exc_info()
+						fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+						l.log("Warning", "({}) debug info: {}, {}, line {}, description: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e))
+					else: time.sleep(1)
+		except Exception as e:
+			exc_type, exc_obj, exc_tb = sys.exc_info()
+			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e))
+
 	async def update_queue(self):
-		await client.wait_until_ready()
 		while True:
 			n = datetime.datetime.now().astimezone(pytz.utc)
 			await asyncio.sleep((15 - n.second % 15) - ((time.time() * 1000) % 1000) / 1000)
+			if not self.isBotReady: continue
 			timeframes = Utils.get_accepted_timeframes()
 
 			await self.update_price_status()
 			await self.send_alerts()
 			if "5m" in timeframes:
 				await self.update_system_status()
+				self.server_ping()
 			if "1H" in timeframes:
 				await self.update_premium_message()
 				await self.security_check()
@@ -544,29 +592,28 @@ class Alpha(discord.AutoShardedClient):
 
 	async def on_message(self, message):
 		try:
-			isSelf = message.author == client.user
-			hasSendPermission = (True if message.guild is None else message.guild.me.permissions_in(message.channel).send_messages)
-			hasContent = message.content != ""
 			guildId = message.guild.id if message.guild is not None else -1
 			if self.dedicatedGuild != 0 and self.dedicatedGuild != guildId: return
 
-			hasMentions = len(message.mentions) != 0 or len(message.channel_mentions) != 0 or len(message.role_mentions) != 0 or "@everyone" in message.content or "@here" in message.content
-			isUserBanned = message.author.id in constants.blockedUsers if not message.author.bot else False
-			isBotUnverified = False if not message.author.bot else any(e in message.author.name.lower() for e in constants.blockedBotNames) or message.author.id in constants.blockedBots
+			isSelf = message.author == client.user
+			isUserBlocked = message.author.id in constants.blockedUsers if not message.author.bot else any(e in message.author.name.lower() for e in constants.blockedBotNames) or message.author.id in constants.blockedBots
 			isChannelBlocked = message.channel.id in constants.blockedChannels or guildId in constants.blockedGuilds
+			hasContent = message.clean_content != ""
 
-			if not self.isBotReady or isChannelBlocked or isBotUnverified: return
+			if not self.isBotReady or isUserBlocked or isChannelBlocked or not hasContent: return
 
 			isPersonalPremium = message.author.id in self.subscribedUsers
 			isServerPremium = guildId in self.subscribedGuilds
 			isPremium = isPersonalPremium or isServerPremium
 
-			raw = " ".join(message.content.lower().split())
+			raw = " ".join(message.clean_content.lower().split())
 			sentMessages = []
 			shortcutsEnabled = True
 			presetUsed = False
 			shortcutUsed = False
 			limit = 30 if isPremium else 10
+			hasMentions = len(message.mentions) != 0 or len(message.channel_mentions) != 0 or len(message.role_mentions) != 0 or "@everyone" in message.content or "@here" in message.content
+			hasSendPermission = (True if message.guild is None else message.guild.me.permissions_in(message.channel).send_messages)
 
 			if not raw.startswith("preset "):
 				if isPremium:
@@ -585,7 +632,7 @@ class Alpha(discord.AutoShardedClient):
 						if preset["phrase"] == raw:
 							presetUsed = True
 
-			isCommand = raw.startswith(("alpha ", "alert ", "preset ", "c ", "p ", "d ", "v ", "hmap ", "mcap ", "mk ", "paper ")) or raw in ["hmap"]
+			isCommand = raw.startswith(("alpha ", "alert ", "preset ", "c ", "p ", "d ", "v ", "hmap ", "mcap ", "mc", "mk ", "paper ")) or raw in ["hmap"]
 
 			if presetUsed and isCommand:
 				if isPremium:
@@ -606,7 +653,7 @@ class Alpha(discord.AutoShardedClient):
 						await message.channel.send("This server is violating terms of service:\n\n{}\n\nFor more info, join Alpha server:".format(constants.termsOfService))
 						await message.channel.send("https://discord.gg/GQeDE85")
 
-			if shortcutsEnabled: raw, isCommand, shortcutUsed = Utils.shortcuts(raw, isCommand)
+			raw, isCommand, shortcutUsed = Utils.shortcuts(raw, isCommand, shortcutsEnabled)
 
 			useMute = isCommand and (presetUsed or shortcutUsed)
 
@@ -632,8 +679,8 @@ class Alpha(discord.AutoShardedClient):
 								serverSettingsRef = db.document(u"alpha/settings/servers/{}".format(guildId))
 								serverSettings = serverSettingsRef.get().to_dict()
 								serverSettings = Utils.updateServerSetting(serverSettings, "functions", sub="assistant", toVal=newVal)
-								serverSettingsRef.set(serverSettings)
-								self.guildProperties[guildId] = dict(serverSettings)
+								serverSettingsRef.set(serverSettings, merge=True)
+								self.guildProperties[guildId] = copy.deepcopy(serverSettings)
 
 								try: await message.channel.send("Google Assistant settings saved for **{}** server".format(message.guild.name))
 								except: await self.unknown_error(message)
@@ -648,8 +695,8 @@ class Alpha(discord.AutoShardedClient):
 								serverSettingsRef = db.document(u"alpha/settings/servers/{}".format(guildId))
 								serverSettings = serverSettingsRef.get().to_dict()
 								serverSettings = Utils.updateServerSetting(serverSettings, "functions", sub="shortcuts", toVal=newVal)
-								serverSettingsRef.set(serverSettings)
-								self.guildProperties[guildId] = dict(serverSettings)
+								serverSettingsRef.set(serverSettings, merge=True)
+								self.guildProperties[guildId] = copy.deepcopy(serverSettings)
 
 								try: await message.channel.send("Shortcuts settings saved for **{}** server".format(message.guild.name))
 								except: await self.unknown_error(message)
@@ -665,8 +712,8 @@ class Alpha(discord.AutoShardedClient):
 									serverSettingsRef = db.document(u"alpha/settings/servers/{}".format(guildId))
 									serverSettings = serverSettingsRef.get().to_dict()
 									serverSettings = Utils.updateServerSetting(serverSettings, "functions", sub="autodelete", toVal=newVal)
-									serverSettingsRef.set(serverSettings)
-									self.guildProperties[guildId] = dict(serverSettings)
+									serverSettingsRef.set(serverSettings, merge=True)
+									self.guildProperties[guildId] = copy.deepcopy(serverSettings)
 
 									try: await message.channel.send("Autodelete settings saved for **{}** server".format(message.guild.name))
 									except: await self.unknown_error(message)
@@ -676,7 +723,7 @@ class Alpha(discord.AutoShardedClient):
 						return
 				if message.author.id in [361916376069439490, 164073578696802305, 390170634891689984]:
 					if command.startswith("premium user"):
-						subscription = message.content.split("premium user ", 1)
+						subscription = raw.split("premium user ", 1)
 						if len(subscription) == 2:
 							parameters = subscription[1].split(" ", 1)
 							if len(parameters) == 2:
@@ -710,8 +757,8 @@ class Alpha(discord.AutoShardedClient):
 									date = datetime.datetime.fromtimestamp(timestamp)
 									fetchedSettings["premium"] = {"subscribed": True, "hadTrial": hadTrial or trial, "hadWarning": False, "timestamp": timestamp, "date": date.strftime("%m. %d. %Y"), "plan": int(plan)}
 
-									fetchedSettingsRef.set(fetchedSettings)
-									self.userProperties[int(userId)] = fetchedSettings
+									fetchedSettingsRef.set(fetchedSettings, merge=True)
+									self.userProperties[int(userId)] = copy.deepcopy(fetchedSettings)
 									self.subscribedUsers.append(int(userId))
 									try: await alphaServer.get_member(int(userId)).add_roles(role)
 									except: pass
@@ -740,7 +787,7 @@ class Alpha(discord.AutoShardedClient):
 									except: pass
 						return
 					elif command.startswith("premium server"):
-						subscription = message.content.split("premium server ", 1)
+						subscription = raw.split("premium server ", 1)
 						if len(subscription) == 2:
 							parameters = subscription[1].split(" ", 1)
 							if len(parameters) == 2:
@@ -775,8 +822,8 @@ class Alpha(discord.AutoShardedClient):
 									date = datetime.datetime.fromtimestamp(timestamp)
 									fetchedSettings["premium"] = {"subscribed": True, "hadTrial": hadTrial or trial, "hadWarning": False, "timestamp": timestamp, "date": date.strftime("%m. %d. %Y"), "plan": int(plan)}
 
-									fetchedSettingsRef.set(fetchedSettings)
-									self.guildProperties[int(guildId)] = fetchedSettings
+									fetchedSettingsRef.set(fetchedSettings, merge=True)
+									self.guildProperties[int(guildId)] = copy.deepcopy(fetchedSettings)
 									self.subscribedGuilds.append(int(guildId))
 
 									if int(plan) > 0:
@@ -798,13 +845,21 @@ class Alpha(discord.AutoShardedClient):
 						return
 					elif command == "restart":
 						self.isBotReady = False
-						try: await message.delete()
+						channel = client.get_channel(560884869899485233)
+						try:
+							await message.delete()
+							alphaMessage = await channel.fetch_message(615137416780578819)
+							await alphaMessage.edit(content="Alpha: **restarting**")
 						except: pass
 						l.log("Status", "A restart has been requested by {}. Timestamp: {}".format(message.author.name, Utils.get_current_date()), post=False)
 						raise KeyboardInterrupt
 					elif command == "reboot":
 						self.isBotReady = False
-						try: await message.delete()
+						channel = client.get_channel(560884869899485233)
+						try:
+							await message.delete()
+							alphaMessage = await channel.fetch_message(615137416780578819)
+							await alphaMessage.edit(content="Alpha: **restarting**")
 						except: pass
 						l.log("Status", "A reboot has been requested by {}. Timestamp: {}".format(message.author.name, Utils.get_current_date()), post=False)
 						if sys.platform == "linux": os.system("sudo reboot")
@@ -812,8 +867,8 @@ class Alpha(discord.AutoShardedClient):
 					else:
 						await self.fusion.process_private_function(client, message, raw, self.coinParser.exchanges, guildId, self.coinParser.lastBitcoinPrice, db)
 						return
-			elif not isSelf and isCommand and hasSendPermission and not hasMentions and not isUserBanned:
-				if raw.startswith(("alpha ", "<@401328409499664394> ", "alpha, ", "<@401328409499664394>, ")):
+			elif not isSelf and isCommand and hasSendPermission and not hasMentions:
+				if message.content.startswith(("alpha ", "<@401328409499664394> ", "alpha, ", "<@401328409499664394>, ")):
 					if message.author.bot:
 						if not await self.bot_verification(message, raw): return
 
@@ -825,6 +880,9 @@ class Alpha(discord.AutoShardedClient):
 						except: await self.unknown_error(message)
 					elif command == "invite":
 						try: await message.channel.send("https://discordapp.com/oauth2/authorize?client_id=401328409499664394&scope=bot&permissions=604372033")
+						except: await self.unknown_error(message)
+					elif command == "status":
+						try: await message.channel.send("Average ping: **{:,.1f}** milliseconds\nProcessing **{:,.0f}** messages per minute".format(self.fusion.averagePing * 1000, self.fusion.averageMessages))
 						except: await self.unknown_error(message)
 					elif (self.guildProperties[guildId]["functions"]["assistant"] if guildId in self.guildProperties else True):
 						self.statistics["alpha"] += 1
@@ -1042,7 +1100,7 @@ class Alpha(discord.AutoShardedClient):
 									except:
 										await self.unknown_error(message)
 								else:
-									await self.price(message, slice, useMute)
+									await self.price(message, slice, isPremium, useMute)
 
 						self.statistics["p"] += len(slices)
 						await self.finish_request(message, raw, len(slices), [])
@@ -1124,7 +1182,7 @@ class Alpha(discord.AutoShardedClient):
 
 						self.statistics["v"] += len(slices)
 						await self.finish_request(message, raw, len(slices), [])
-				elif raw.startswith(("hmap ", "hmap, ")) or raw == "hmap":
+				elif raw.startswith("hmap "):
 					if message.author.bot:
 						if not await self.bot_verification(message, raw): return
 
@@ -1203,7 +1261,7 @@ class Alpha(discord.AutoShardedClient):
 						]
 						try: await message.channel.send("\n".join(helpCommandParts))
 						except: await self.unknown_error(message)
-					elif raw not in ["mcap "]:
+					else:
 						slices = re.split(", mcap | mcap |, mc | mc |, ", raw.split(" ", 1)[1])
 						if len(slices) > 5:
 							await self.hold_up(message, isPremium)
@@ -1239,7 +1297,7 @@ class Alpha(discord.AutoShardedClient):
 						]
 						try: await message.channel.send("\n".join(helpCommandParts))
 						except: await self.unknown_error(message)
-					elif raw not in ["mk "]:
+					else:
 						slices = re.split(", mk | mk |, ", raw.split(" ", 1)[1])
 						if len(slices) > 5:
 							await self.hold_up(message, isPremium)
@@ -1260,22 +1318,47 @@ class Alpha(discord.AutoShardedClient):
 
 						self.statistics["mk"] += len(slices)
 						await self.finish_request(message, raw, len(slices), [])
-				elif raw.startswith("paper "):
+				elif raw.startswith("paper ") and 601524236464553984 in [role.id for role in message.author.roles]:
 					if message.author.bot:
 						if not await self.bot_verification(message, raw): return
 
 					if raw in ["paper help"]:
-						return
+						helpCommandParts = [
+							"__**Syntax:**__",
+							"Execute orders ```paper <order type> <coin> <exchange> <amount@price>```",
+							"Check your available balance ```paper balance <exchange> [all]```",
+							"Get trading history ```paper history```",
+							"Check all open orders ```paper orders```",
+							"__**Examples:**__",
+							"`paper buy btc 100%` buy BTC with 100% of available USD at market price",
+							"`paper sell btc 0.01` sell 0.01 BTC at market price",
+							"`paper buy btc 50%@5900` place a limit buy order with 50% of available USD at $5900",
+							"`paper stop btc 100%@10%` place a stop loss to sell entire BTC position 10% below the current price",
+							"`paper trailing stop btc 0.25@5%` place a 5% trailing stop loss to sell 0.25 BTC"
+						]
+						try: await message.channel.send("\n".join(helpCommandParts))
+						except: await self.unknown_error(message)
+					elif raw in ["paper leaderboard"]:
+						await self.fetch_leaderboard(message, raw)
+					elif raw.startswith("paper balance"):
+						await self.fetch_paper_balance(message, raw)
+					elif raw in ["paper history", "paper order history", "paper trade history", "paper history all", "paper order history all", "paper trade history all"]:
+						await self.fetch_paper_orders(message, raw, "history")
+					elif raw in ["paper orders", "paper open orders"]:
+						await self.fetch_paper_orders(message, raw, "open_orders")
 					else:
-						return
+						slices = re.split(', paper | paper |, ', raw.split(" ", 1)[1])
+						for slice in slices:
+							await self.process_paper_trade(message, slice)
 			else:
+				self.fusion.calculate_average_ping(message, client.cached_messages)
 				if await self.fusion.invite_warning(message, raw, guildId): return
 				if (self.guildProperties[guildId]["functions"]["assistant"] if guildId in self.guildProperties else True):
 					if await self.funnyReplies(message, raw):
 						self.statistics["alpha"] += 1
 						return
-				if not any(keyword in raw for keyword in constants.mutedMentionWords) and not message.author.bot and any(e in re.findall(r"[\w']+", raw) for e in constants.mentionWords):
-					mentionMessage = "{}/{}: {}".format(message.guild.name, message.channel.name, message.content.replace("@everyone", "everyone").replace("@here", "here"))
+				if not any(keyword in raw for keyword in constants.mutedMentionWords) and not message.author.bot and any(e in re.findall(r"[\w']+", raw) for e in constants.mentionWords) and guildId not in [414498292655980583, -1]:
+					mentionMessage = "{}/{}: {}".format(message.guild.name, message.channel.name, message.clean_content)
 					t = threading.Thread(target=self.webhook_send, args=("https://discordapp.com/api/webhooks/565908326110724117/G1CcoCN5FueN5psTLLqWgIp1nd4sYbcDhi_aCbN0msEL-0ZT5vgGSFZP8wHIhUT0n5pN", mentionMessage, "{}#{}".format(message.author.name, message.author.discriminator), message.author.avatar_url, False, message.attachments, message.embeds))
 					t.start()
 		except asyncio.CancelledError: pass
@@ -1341,8 +1424,14 @@ class Alpha(discord.AutoShardedClient):
 												for alert in deletedAlerts:
 													allAlerts[s].remove(alert)
 												alertsRef = db.document(u"alpha/alerts/{}/{}".format(id, user.id))
-												try: alertsRef.set(allAlerts)
-												except: await self.unknown_error(message)
+												try:
+													batch = db.batch()
+													batch.set(alertsRef, allAlerts, merge=True)
+													for i in range(1, self.fusion.numInstances + 1):
+														batch.set(db.document(u'fusion/instance-{}'.format(i)), {"needsUpdate": True}, merge=True)
+													batch.commit()
+												except:
+													await self.unknown_error(message)
 												try: await reaction.message.delete()
 												except: pass
 												return
@@ -1357,9 +1446,9 @@ class Alpha(discord.AutoShardedClient):
 						fetchedSettings = fetchedSettingsRef.get().to_dict()
 						fetchedSettings = Utils.createServerSetting(fetchedSettings) if isServer else Utils.createUserSettings(fetchedSettings)
 						fetchedSettings, statusMessage = Presets.updatePresets(fetchedSettings, remove=presetName)
-						fetchedSettingsRef.set(fetchedSettings)
-						if isServer: self.guildProperties[reaction.message.guild.id] = fetchedSettings
-						else: self.userProperties[reaction.message.author.id] = fetchedSettings
+						fetchedSettingsRef.set(fetchedSettings, merge=True)
+						if isServer: self.guildProperties[reaction.message.guild.id] = copy.deepcopy(fetchedSettings)
+						else: self.userProperties[user.id] = copy.deepcopy(fetchedSettings)
 
 						try: await reaction.message.delete()
 						except: pass
@@ -1448,10 +1537,10 @@ class Alpha(discord.AutoShardedClient):
 
 	async def hold_up(self, message, isPremium):
 		if isPremium:
-			try: await message.channel.send("You are requesting a lot of charts at once. Having Alpha Premium does not mean you should spam, <@!{}>".format(message.author.id))
+			try: await message.channel.send("You are requesting a lot of things at once. Having Alpha Premium does not mean you should spam, <@!{}>".format(message.author.id))
 			except: self.unknown_error(message)
 		else:
-			try: await message.channel.send("You are requesting a lot of charts at once. Maybe you should chill a little, <@!{}>".format(message.author.id))
+			try: await message.channel.send("You are requesting a lot of things at once. Maybe you should chill a little, <@!{}>".format(message.author.id))
 			except: self.unknown_error(message)
 
 	async def alert(self, message, raw, mute=False):
@@ -1464,13 +1553,13 @@ class Alpha(discord.AutoShardedClient):
 					try: await message.channel.trigger_typing()
 					except: pass
 
-					tickerId, tickerParts, isAggregatedSymbol = self.coinParser.process_ticker(arguments[1].upper(), self.coinParser.coins["alerts"])
+					tickerId, exchange, tickerParts, isAggregatedSymbol = self.coinParser.process_ticker(arguments[1].upper(), self.coinParser.coins["alerts"])
 					if isAggregatedSymbol:
 						try: await message.channel.send("Aggregated tickers aren't supported with the **alert** command")
 						except: await self.unknown_error(message)
 						return
 
-					outputMessage, tickerId, arguments = self.alerts.process_alert_arguments(arguments, tickerId)
+					outputMessage, tickerId, arguments = self.alerts.process_alert_arguments(arguments, tickerId, exchange)
 					if outputMessage is not None:
 						if not mute:
 							try: await message.channel.send(outputMessage)
@@ -1522,7 +1611,11 @@ class Alpha(discord.AutoShardedClient):
 					allAlerts[key].append(newAlert)
 
 					try:
-						alertsRef.set(allAlerts)
+						batch = db.batch()
+						batch.set(alertsRef, allAlerts, merge=True)
+						for i in range(1, self.fusion.numInstances + 1):
+							batch.set(db.document(u'fusion/instance-{}'.format(i)), {"needsUpdate": True}, merge=True)
+						batch.commit()
 					except:
 						await self.unknown_error(message)
 						return
@@ -1591,9 +1684,9 @@ class Alpha(discord.AutoShardedClient):
 					fetchedSettings = fetchedSettingsRef.get().to_dict()
 					fetchedSettings = Utils.createServerSetting(fetchedSettings) if isServer else Utils.createUserSettings(fetchedSettings)
 					fetchedSettings, statusMessage = Presets.updatePresets(fetchedSettings, add=arguments[1 + offset].replace("`", ""), shortcut=arguments[2 + offset])
-					fetchedSettingsRef.set(fetchedSettings)
-					if isServer: self.guildProperties[guildId] = fetchedSettings
-					else: self.userProperties[message.author.id] = fetchedSettings
+					fetchedSettingsRef.set(fetchedSettings, merge=True)
+					if isServer: self.guildProperties[guildId] = copy.deepcopy(fetchedSettings)
+					else: self.userProperties[message.author.id] = copy.deepcopy(fetchedSettings)
 
 					try: await message.channel.send(statusMessage)
 					except: await self.unknown_error(message)
@@ -1604,8 +1697,8 @@ class Alpha(discord.AutoShardedClient):
 					settings = Utils.createServerSetting(settings) if isServer else Utils.createUserSettings(settings)
 					try: await message.channel.send("__**Presets:**__")
 					except: await self.unknown_error(message)
-					if len(presets["presets"]) > 0:
-						for preset in presets["presets"]:
+					if len(settings["presets"]) > 0:
+						for preset in settings["presets"]:
 							try:
 								presetMessage = await message.channel.send("● {}{} `{}`".format(preset["phrase"], " (server-wide)" if isServer else "", preset["shortcut"]))
 								await presetMessage.add_reaction('❌')
@@ -1630,8 +1723,8 @@ class Alpha(discord.AutoShardedClient):
 			with message.channel.typing():
 				arguments = raw.split(" ")
 
-				tickerId, tickerParts, isAggregatedSymbol = self.coinParser.process_ticker(arguments[0].upper(), self.coinParser.coins["charts"], isOnlyCrypto=False)
-				outputMessage, tickerId, arguments = self.imageProcessor.process_tradingview_arguments(arguments, tickerId, tickerParts)
+				tickerId, exchange, tickerParts, isAggregatedSymbol = self.coinParser.process_ticker(arguments[0].upper(), self.coinParser.coins["charts"], isOnlyCrypto=False)
+				outputMessage, tickerId, arguments = self.imageProcessor.process_tradingview_arguments(arguments, tickerId, exchange, tickerParts)
 				if outputMessage is not None:
 					if not mute:
 						try: await message.channel.send(outputMessage)
@@ -1772,17 +1865,17 @@ class Alpha(discord.AutoShardedClient):
 			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, raw))
 			return ([], 0)
 
-	async def price(self, message, raw, mute=False):
+	async def price(self, message, raw, isPremium, mute=False):
 		try:
 			arguments = raw.split(" ")
 
-			tickerId, tickerParts, isAggregatedSymbol = self.coinParser.process_ticker(arguments[0].upper(), self.coinParser.coins["ohlcv"])
+			tickerId, exchange, tickerParts, isAggregatedSymbol = self.coinParser.process_ticker(arguments[0].upper(), self.coinParser.coins["ohlcv"])
 			if isAggregatedSymbol:
 				try: await message.channel.send("Aggregated tickers aren't supported with the **alert** command")
 				except: await self.unknown_error(message)
 				return
 
-			outputMessage, tickerId, arguments = self.coinParser.process_coin_data_arguments(arguments, tickerId, hasActions=True, command="p")
+			outputMessage, tickerId, arguments = self.coinParser.process_coin_data_arguments(arguments, tickerId, exchange, hasActions=True, command="p")
 			if outputMessage is not None:
 				if not mute:
 					try: await message.channel.send(outputMessage)
@@ -1795,6 +1888,7 @@ class Alpha(discord.AutoShardedClient):
 
 			if action == "funding": await self.bitmex_funding(message, tickerId, mute)
 			elif action == "futures": await self.bitmex_futures(message, tickerId, mute)
+			elif action == "oi": await self.bitmex_open_interest(message, tickerId, isPremium, mute)
 			elif action == "premiums": await self.bitcoin_premiums(message, tickerId, mute)
 			elif action == "ls": await self.long_short_ratio(message, tickerId, False, mute)
 			elif action == "sl": await self.long_short_ratio(message, tickerId, True, mute)
@@ -2022,13 +2116,13 @@ class Alpha(discord.AutoShardedClient):
 		try:
 			arguments = raw.split(" ")
 
-			tickerId, tickerParts, isAggregatedSymbol = self.coinParser.process_ticker(arguments[0].upper(), self.coinParser.coins["ohlcv"])
+			tickerId, exchange, tickerParts, isAggregatedSymbol = self.coinParser.process_ticker(arguments[0].upper(), self.coinParser.coins["ohlcv"])
 			if isAggregatedSymbol:
 				try: await message.channel.send("Aggregated tickers aren't supported with the **alert** command")
 				except: await self.unknown_error(message)
 				return
 
-			outputMessage, tickerId, arguments = self.coinParser.process_coin_data_arguments(arguments, tickerId, command="v")
+			outputMessage, tickerId, arguments = self.coinParser.process_coin_data_arguments(arguments, tickerId, exchange, command="v")
 			if outputMessage is not None:
 				if not mute:
 					try: await message.channel.send(outputMessage)
@@ -2093,13 +2187,13 @@ class Alpha(discord.AutoShardedClient):
 		try:
 			arguments = raw.split(" ")
 
-			tickerId, tickerParts, isAggregatedSymbol = self.coinParser.process_ticker(arguments[0].upper(), self.coinParser.coins["ohlcv"])
+			tickerId, exchange, tickerParts, isAggregatedSymbol = self.coinParser.process_ticker(arguments[0].upper(), self.coinParser.coins["ohlcv"])
 			if isAggregatedSymbol:
 				try: await message.channel.send("Aggregated tickers aren't supported with the **alert** command")
 				except: await self.unknown_error(message)
 				return
 
-			outputMessage, tickerId, arguments = self.coinParser.process_coin_data_arguments(arguments, tickerId, command="v")
+			outputMessage, tickerId, arguments = self.coinParser.process_coin_data_arguments(arguments, tickerId, exchange, command="v")
 			if outputMessage is not None:
 				if not mute:
 					try: await message.channel.send(outputMessage)
