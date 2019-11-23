@@ -1,7 +1,10 @@
+engine/
+
 *.pyc
 *.log
 __pycache__
 keys/
-engine/
 env/
 charts/
+firebase_storage.py
+bot/assets/statistics

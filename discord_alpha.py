@@ -7,69 +7,48 @@ import json
 import time
 import datetime
 import pytz
-import click
-import requests
 import urllib
-from io import BytesIO
 import threading
 import argparse
 import logging
 import atexit
 
 import discord
+import dbl
 import asyncio
 import ccxt
-from PIL import Image
 
-import google.oauth2.credentials
-import firebase_admin
-from firebase_admin import credentials
-from firebase_admin import firestore
+from firebase_admin import initialize_app as initialize_firebase_app
+from firebase_admin import credentials, firestore, storage
 from google.cloud import exceptions
 
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.common.exceptions import TimeoutException
-import selenium.webdriver.support.ui as ui
-from selenium.webdriver.support import expected_conditions as EC
-
 from bot.keys.keys import Keys as ApiKeys
+from bot.assets import firebase_storage
 from bot.helpers.utils import Utils
 from bot.helpers.logger import Logger as l
 from bot.helpers import constants
 
-from bot.assistant.base import AlphaAssistant
+from bot.engine.assistant import Assistant
 from bot.engine.alerts import Alerts
 from bot.engine.presets import Presets
 from bot.engine.images import ImageProcessor
 from bot.engine.coins import CoinParser
-from bot.engine.coingecko import CoinGeckoLink
 from bot.engine.trader import PaperTrader
 from bot.engine.fusion import Fusion
 
-try:
-	# Firebase
-	firebaseCredentials = credentials.Certificate("bot/keys/firebase credentials.json")
-	firebase = firebase_admin.initialize_app(firebaseCredentials)
-	db = firestore.client()
+from bot.engine.connections.exchanges import Exchanges
+from bot.engine.connections.coingecko import CoinGecko
+from bot.engine.connections.alternativeme import Alternativeme
 
-	# Google Assistant
-	with open(os.path.join(click.get_app_dir("google-oauthlib-tool"), "credentials.json"), "r") as f:
-		assistantCredentials = google.oauth2.credentials.Credentials(token=None, **json.load(f))
-		http_request = google.auth.transport.requests.Request()
-		assistantCredentials.refresh(http_request)
-except KeyboardInterrupt: os._exit(1)
+try:
+	firebase = initialize_firebase_app(credentials.Certificate("bot/keys/firebase_credentials.json"), {'storageBucket': ApiKeys.get_firebase_bucket()})
+	db = firestore.client()
+	bucket = storage.bucket()
 except Exception as e:
 	exc_type, exc_obj, exc_tb = sys.exc_info()
 	fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
 	l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e))
 	os._exit(1)
-
-# Google Assistant
-grpc_channel = google.auth.transport.grpc.secure_authorized_channel(assistantCredentials, http_request, "embeddedassistant.googleapis.com")
 
 # Command history
 history = logging.getLogger("History")
@@ -80,16 +59,22 @@ history.addHandler(hfh)
 
 class Alpha(discord.AutoShardedClient):
 	isBotReady = False
+	lastMessageTimestamp = None
 	dedicatedGuild = -1
+	dblpy = None
 
+	assistant = Assistant()
 	alerts = Alerts()
 	imageProcessor = ImageProcessor()
 	coinParser = CoinParser()
-	coinGeckoLink = CoinGeckoLink()
 	paperTrader = PaperTrader()
 	fusion = Fusion()
 
-	statistics = {"c": 0, "alerts": 0, "p": 0, "v": 0, "d": 0, "hmap": 0, "mcap": 0, "mk": 0, "alpha": 0}
+	exchangeConnection = Exchanges()
+	coinGeckoConnection = CoinGecko()
+	alternativemeConnection = Alternativeme()
+
+	statistics = {"alpha": 0, "alerts": 0, "c": 0, "p": 0, "v": 0, "d": 0, "hmap": 0, "mcap": 0, "mk": 0, "paper": 0}
 	rateLimited = {"c": {}, "p": {}, "d": {}, "v": {}, "u": {}}
 	usedPresetsCache = {}
 
@@ -105,58 +90,84 @@ class Alpha(discord.AutoShardedClient):
 		self.dedicatedGuild = for_guild
 
 		for side in constants.supportedExchanges:
+			if side in ["unsupported"]: continue
 			for id in constants.supportedExchanges[side]:
 				if id not in self.coinParser.exchanges:
 					self.rateLimited["p"][id] = {}
 					self.rateLimited["d"][id] = {}
 					self.rateLimited["v"][id] = {}
-					self.coinParser.exchanges[id] = getattr(ccxt, id)()
-					if self.coinParser.exchanges[id].has["fetchOHLCV"] and hasattr(self.coinParser.exchanges[id], "timeframes"):
-						if id not in constants.supportedExchanges["ohlcv"]:
-							l.log("New OHLCV data supported exchange: {}".format(id))
-					if self.coinParser.exchanges[id].has["fetchOrderBook"]:
-						if id not in constants.supportedExchanges["orderbook"]:
-							l.log("New orderbook supported exchange: {}".format(id))
+					try: self.coinParser.exchanges[id] = getattr(ccxt, id)()
+					except: continue
 
-	async def on_ready(self):
-		self.coinParser.refresh_coins()
-		self.coinGeckoLink.refresh_coingecko_coin_list()
-		self.fetch_settings()
-		self.update_fusion_queue()
-		self.server_ping()
+		self.dblpy = dbl.DBLClient(client, ApiKeys.get_topgg_key())
 
 		try:
-			rawData = self.coinParser.exchanges["bitmex"].fetch_ohlcv(
+			newOhlcvExchanges = []
+			newOrderBookExchanges = []
+			for id in ccxt.exchanges:
+				if id in constants.supportedExchanges["unsupported"]: continue
+				try:
+					exchange = getattr(ccxt, id)()
+					if exchange.has["fetchOrderBook"] and exchange.has["fetchOHLCV"] and hasattr(exchange, "timeframes"):
+						if exchange.name not in [self.coinParser.exchanges[id].name for id in constants.supportedExchanges["ohlcv"]]:
+							newOhlcvExchanges.append(id)
+				except Exception as e:
+					l.log("Exchage ID might have changed: {} ({})".format(id, e))
+			if len(newOhlcvExchanges) != 0:
+				l.log("New OHLCV supported exchanges: {}".format(newOhlcvExchanges))
+			if len(newOrderBookExchanges) != 0:
+				l.log("New OHLCV + orderbook supported exchanges: {}".format(newOrderBookExchanges))
+		except asyncio.CancelledError: pass
+		except Exception as e:
+			exc_type, exc_obj, exc_tb = sys.exc_info()
+			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e))
+
+	async def on_ready(self):
+		t = datetime.datetime.now().astimezone(pytz.utc)
+
+		self.coinParser.refresh_coins()
+		self.coinGeckoConnection.refresh_coingecko_datasets()
+		self.fetch_settings(t)
+		self.update_fusion_queue()
+
+		try:
+			priceData = self.coinParser.exchanges["bitmex"].fetch_ohlcv(
 				"BTC/USD",
 				timeframe="1d",
-				since=(self.coinParser.exchanges["bitmex"].milliseconds() - 24 * 60 * 60 * 5 * 1000)
+				since=(self.coinParser.exchanges["bitmex"].milliseconds() - 24 * 60 * 60 * 3 * 1000)
 			)
-			self.coinParser.lastBitcoinPrice = rawData[-1][4]
+			self.coinParser.lastBitcoinPrice = priceData[-1][4]
 		except: pass
 
 		await self.wait_for_chunked()
-		if sys.platform == "linux": self.update_guild_count()
-		try:
-			faqAndRulesChannel = client.get_channel(601160698310950914)
-			rulesAndTOSMessage = await faqAndRulesChannel.fetch_message(601160743236141067)
-			faq1Message = await faqAndRulesChannel.fetch_message(601163022529986560)
-			faq2Message = await faqAndRulesChannel.fetch_message(601163058831818762)
-			faq3Message = await faqAndRulesChannel.fetch_message(601163075126689824)
-			await rulesAndTOSMessage.edit(content=constants.rulesAndTOS)
-			await faq1Message.edit(content=constants.faq1)
-			await faq2Message.edit(content=constants.faq2)
-			await faq3Message.edit(content=constants.faq3)
-		except: pass
+		if sys.platform == "linux":
+			await self.update_guild_count()
+			try:
+				faqAndRulesChannel = client.get_channel(601160698310950914)
+				rulesAndTOSMessage = await faqAndRulesChannel.fetch_message(601160743236141067)
+				faq1Message = await faqAndRulesChannel.fetch_message(601163022529986560)
+				faq2Message = await faqAndRulesChannel.fetch_message(601163058831818762)
+				faq3Message = await faqAndRulesChannel.fetch_message(601163075126689824)
+				await rulesAndTOSMessage.edit(content=constants.rulesAndTOS)
+				await faq1Message.edit(content=constants.faq1)
+				await faq2Message.edit(content=constants.faq2)
+				await faq3Message.edit(content=constants.faq3)
+				channel = client.get_channel(560884869899485233)
+				alphaMessage = await channel.fetch_message(640502830062632960)
+				onlineEmbed = discord.Embed(title=":white_check_mark: Alpha: online", color=constants.colors["deep purple"])
+				await alphaMessage.edit(embed=onlineEmbed)
+			except: pass
 
-		await self.update_subscribers()
+		await self.update_properties()
 		await self.update_premium_message()
 		await self.security_check()
 		await self.send_alerts()
-		await self.update_system_status()
-		await self.update_price_status()
+		await self.update_system_status(t)
+		await self.update_price_status(t)
 
 		self.isBotReady = True
-		l.log("Alpha is online on {} servers ({:,} users)".format(len(client.guilds), len(set(client.get_all_members()))), post=False)
+		l.log("Status", "Alpha is online on {} servers ({:,} users)".format(len(client.guilds), len(client.users)))
 
 	async def wait_for_chunked(self):
 		for guild in client.guilds:
@@ -168,7 +179,8 @@ class Alpha(discord.AutoShardedClient):
 
 		try:
 			for i in self.imageProcessor.screengrab:
-				self.imageProcessor.screengrab[i].quit()
+				try: self.imageProcessor.screengrab[i].quit()
+				except: continue
 		except: pass
 
 		try:
@@ -176,7 +188,8 @@ class Alpha(discord.AutoShardedClient):
 				statisticsRef = db.document(u"alpha/statistics")
 				for i in range(5):
 					try:
-						statisticsRef.set(self.statistics, merge=True)
+						t = datetime.datetime.now().astimezone(pytz.utc)
+						statisticsRef.set({"{}-{}".format(t.month, t.year): {"discord": self.statistics}}, merge=True)
 						break
 					except Exception as e:
 						if i == 4: raise e
@@ -187,24 +200,20 @@ class Alpha(discord.AutoShardedClient):
 			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e))
 
 	async def on_guild_join(self, guild):
-		self.update_guild_count()
+		await self.update_guild_count()
 		if guild.id in constants.bannedGuilds:
-			l.log("Status", "timestamp: {}, description: left a blocked server: {}".format(Utils.get_current_date(), message.guild.name))
+			l.log("Warning", "timestamp: {}, description: left a blocked server: {}".format(Utils.get_current_date(), message.guild.name))
 			try: await guild.leave()
 			except: pass
 
 	async def on_guild_remove(self, guild):
-		self.update_guild_count()
+		await self.update_guild_count()
 
-	def update_guild_count(self):
-		try:
-			url = "https://discordbots.org/api/bots/{}/stats".format(client.user.id)
-			headers = {"Authorization": ApiKeys.get_discordbots_key()}
-			payload = {"server_count": len(client.guilds)}
-			requests.post(url, data=payload, headers=headers)
+	async def update_guild_count(self):
+		try: await self.dblpy.post_guild_count()
 		except: pass
 
-	def fetch_settings(self):
+	def fetch_settings(self, t):
 		try:
 			settingsRef = db.document(u"alpha/settings")
 			self.alphaSettings = settingsRef.get().to_dict()
@@ -222,28 +231,57 @@ class Alpha(discord.AutoShardedClient):
 			statisticsRef = db.document(u"alpha/statistics")
 			statisticsData = statisticsRef.get().to_dict()
 			if statisticsData is not None:
-				for data in statisticsData:
-					self.statistics[data] = statisticsData[data]
+				slice = "{}-{}".format(t.month, t.year)
+				for data in statisticsData[slice]["discord"]:
+					self.statistics[data] = statisticsData[slice]["discord"][data]
 		except Exception as e:
-			l.log("Status", "timestamp: {}, description: could not reach Firebase: {}".format(Utils.get_current_date(), e))
+			exc_type, exc_obj, exc_tb = sys.exc_info()
+			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+			l.log("Fatal Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e))
 			time.sleep(15)
-			self.fetch_settings()
+			self.fetch_settings(t)
 
 	def update_fusion_queue(self):
 		try:
 			instances = self.fusion.manage_load_distribution(self.coinParser.exchanges)
 			if sys.platform == "linux":
-				try: db.document(u"fusion/distribution").set(instances)
+				try: db.document(u'fusion/alpha').set({"distribution": instances}, merge=True)
 				except: pass
 		except Exception as e:
 			exc_type, exc_obj, exc_tb = sys.exc_info()
 			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
 			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e))
 
-	async def update_subscribers(self):
+	async def update_properties(self):
 		try:
 			alphaServer = client.get_guild(414498292655980583)
 			role = discord.utils.get(alphaServer.roles, id=484387309303758848)
+
+			if sys.platform == "linux":
+				allUsers = [e.id for e in client.users]
+				allGuilds = [e.id for e in client.guilds]
+
+				batch = db.batch()
+				i = 0
+				for userId in list(self.userProperties):
+					if userId not in allUsers:
+						i += 1
+						self.userProperties.pop(userId, None)
+						batch.delete(db.document(u"alpha/settings/users/{}".format(userId)))
+						if i == 500:
+							batch.commit()
+							i, batch = 0, None
+							batch = db.batch()
+
+				for guildId in list(self.guildProperties):
+					if guildId not in allGuilds:
+						i += 1
+						self.guildProperties.pop(guildId, None)
+						batch.delete(db.document(u"alpha/settings/servers/{}".format(userId)))
+						if i == 500:
+							batch.commit()
+							i, batch = 0, None
+							batch = db.batch()
 
 			for userId in self.userProperties:
 				if self.userProperties[userId]["premium"]["subscribed"]:
@@ -258,7 +296,8 @@ class Alpha(discord.AutoShardedClient):
 							fetchedSettingsRef.set(self.userProperties[userId], merge=True)
 							try:
 								recepient = client.get_user(userId)
-								await recepient.send("Your Alpha Premium subscription has expired")
+								embed = discord.Embed(title="Your Alpha Premium subscription has expired", color=constants.colors["deep purple"])
+								await recepient.send(embed=embed)
 								await alphaServer.get_member(userId).remove_roles(role)
 							except: pass
 						elif self.userProperties[userId]["premium"]["timestamp"] - 259200 < time.time() and not self.userProperties[userId]["premium"]["hadWarning"]:
@@ -266,7 +305,8 @@ class Alpha(discord.AutoShardedClient):
 							self.userProperties[userId]["premium"]["hadWarning"] = True
 							fetchedSettingsRef.set(self.userProperties[userId], merge=True)
 							if recepient is not None:
-								try: await recepient.send("Your Alpha Premium subscription expires on {}".format(self.userProperties[userId]["premium"]["date"]))
+								embed = discord.Embed(title="Your Alpha Premium subscription expires on {}".format(self.userProperties[userId]["premium"]["date"]), color=constants.colors["deep purple"])
+								try: await recepient.send(embed=embed)
 								except: pass
 						elif userId not in self.subscribedUsers:
 							self.subscribedUsers.append(userId)
@@ -287,7 +327,8 @@ class Alpha(discord.AutoShardedClient):
 							guild = client.get_guild(guildId)
 							for member in guild.members:
 								if member.guild_permissions.administrator:
-									try: await member.send("Alpha Premium subscription for your *{}* server has expired".format(guild.name))
+									embed = discord.Embed(title="Alpha Premium subscription for your *{}* server has expired".format(guild.name), color=constants.colors["deep purple"])
+									try: await member.send(embed=embed)
 									except: pass
 						elif self.guildProperties[guildId]["premium"]["timestamp"] - 259200 < time.time() and not self.guildProperties[guildId]["premium"]["hadWarning"]:
 							guild = client.get_guild(guildId)
@@ -296,7 +337,8 @@ class Alpha(discord.AutoShardedClient):
 							if guild is not None:
 								for member in guild.members:
 									if member.guild_permissions.administrator:
-										try: await member.send("Alpha Premium subscription for your *{}* server expires on {}".format(guild.name, self.guildProperties[guildId]["premium"]["date"]))
+										embed = discord.Embed(title="Alpha Premium subscription for your *{}* server expires on {}".format(guild.name, self.guildProperties[guildId]["premium"]["date"]), color=constants.colors["deep purple"])
+										try: await member.send(embed=embed)
 										except: pass
 						elif guildId not in self.subscribedGuilds:
 							self.subscribedGuilds.append(guildId)
@@ -353,7 +395,7 @@ class Alpha(discord.AutoShardedClient):
 						if isWhitelisted: self.alphaSettings["tosWhitelist"].pop(guild.name)
 
 				for member in guild.members:
-					if (member.name == "maco" or False if member.nick is None else member.nick.lower() == "maco") and member.id != 361916376069439490:
+					if (member.name.lower() in ["[alpha] maco", "maco <alpha dev>", "maco", "macoalgo", "alpha"] or False if member.nick is None else member.nick.lower() in ["[alpha] maco", "maco <alpha dev>", "maco", "macoalgo", "alpha"]) and member.id != 361916376069439490:
 						if str(member.avatar_url) not in self.alphaSettings["avatarWhitelist"]:
 							suspiciousUser = "**{}#{}** ({}): {}".format(member.name, member.discriminator, member.id, member.avatar_url)
 							if suspiciousUser not in suspiciousUsers: suspiciousUsers.append(suspiciousUser)
@@ -363,7 +405,7 @@ class Alpha(discord.AutoShardedClient):
 			if len(nicknames) > 0:
 				nicknamesMessage = "These servers might be rebranding Alpha bot:\n● {}".format("\n● ".join(nicknames))
 			if len(suspiciousUsers) > 0:
-				suspiciousUsersMessage = "\n\nThese users might be impersonating Maco#9999:\n● {}".format("\n● ".join(suspiciousUsers))
+				suspiciousUsersMessage = "\n\nThese users might be impersonating MacoAlgo#9999:\n● {}".format("\n● ".join(suspiciousUsers))
 
 			securityMessage = "Nothig to review..." if nicknamesMessage == "" and suspiciousUsersMessage == "" else nicknamesMessage + suspiciousUsersMessage
 
@@ -388,26 +430,22 @@ class Alpha(discord.AutoShardedClient):
 			for symbol in prices:
 				for _ in range(10):
 					try:
-						rawData = self.coinParser.exchanges["binance"].fetch_ohlcv(
+						priceData = self.coinParser.exchanges["binance"].fetch_ohlcv(
 							symbol,
-							timeframe="5m",
-							since=(self.coinParser.exchanges["binance"].milliseconds() - 60 * 60 * 5 * 1000)
+							timeframe="1h",
+							since=(self.coinParser.exchanges["binance"].milliseconds() - 60 * 60 * 2 * 1000)
 						)
-						prices[symbol] = rawData[-2][4]
+						prices[symbol] = priceData[-1][4]
 						break
 					except: await asyncio.sleep(self.coinParser.exchanges["binance"].rateLimit / 1000 * 2)
 
 			if prices["BTC/USDT"] != 0 and prices["ETH/USDT"] != 0:
-				monthlyPremiumText = "__**F E A T U R E S**__\n\nWith Alpha premium you'll get access to price alerts, command presets, message forwarding service (currently not available), as well as increased rate limits.\n\n**Price alerts (beta)**\nWith price alerts, you are able to get instant notifications through Discord via direct messages whenever the price of supported coins crosses a certain level or when popular indicators reach a certain value.\n\n**Command presets**\nPresets allow you to quickly call commands you use most often, create indicator sets and more.\n\n**Other perks**\nThe package also comes with raised limits. Instead of 10 charts, you can request up to 30 charts per minute.\n\n__**P R I C I N G**__\nSubscription of $15/month or $150/year in crypto.\nCurrent Bitcoin pricing: {:,.8f} BTC/month or {:,.8f} BTC/year.\nCurrent Ethereum pricing: {:,.8f} ETH/month or {:,.8f} ETH/year.\n\nPlease, contact <@!361916376069439490> for more details. All users are eligible for one month free trial. For server-wide premium subscription, check <#560475744258490369>.".format(15 / prices["BTC/USDT"], 150 / prices["BTC/USDT"], 15 / prices["ETH/USDT"], 150 / prices["ETH/USDT"])
-				annualPremiumText = "__**F E A T U R E S**__\n\nWith Alpha premium you'll get access to price alerts, command presets, message forwarding service (currently not available), a dedicated VPS, as well as increased rate limits. All premium features are available to all users across all servers with Alpha server-wide Premium\n\n**Personal and server-wide (coming soon) price alerts (beta)**\nWith price alerts, you are able to get instant notifications through Discord via direct messages whenever the price of supported coins crosses a certain level or when popular indicators reach a certain value. Server-wide price alers go a step further by alowing server owners to set price alerts for all users via a specified channel.\n\n**Personal and server-wide command presets**\nPresets allow you to quickly call commands you use most often, create indicator sets and more. Similarly to price alerts, server-wide command presets allow server owners to create presets available to all users in a server.\n\n**Dedicated VPS**\nA dedicated virtual private server will deliver cutting edge performance of Alpha in your discord server even during high load.\n\n**Other perks**\nThe package also comes with raised limits. Instead of 10 charts, you can request up to 30 charts per minute.\n\n__**P R I C I N G**__\nSubscription of $100/month or $1000/year in crypto. A dedicated VPS can be purchased separately for $50/month.\nCurrent Bitcoin pricing: {:,.8f} BTC/month or {:,.8f} BTC/year.\nCurrent Ethereum pricing: {:,.8f} ETH/month or {:,.8f} ETH/year.\n\nPlease, contact <@!361916376069439490> for more details. All servers are eligible for one month free trial (dedicated VPS is not included). For personal premium subscription, check <#509428086979297320>".format(100 / prices["BTC/USDT"], 1000 / prices["BTC/USDT"], 100 / prices["ETH/USDT"], 1000 / prices["ETH/USDT"])
+				premiumText = "__**A L P H A   P R E M I U M   F E A T U R E S**__\nWith Alpha premium you'll get access to price alerts, command presets, as well as increased rate limits.\n\n**Price alerts**\nPrice alerts allow you to make sure you don't miss a single move in the market. Alpha will notify you of a price move right through Discord, so you don't have to move between platforms.\n\n**Command presets**\nWith command presets you're able to make multiple requests at once, save your chart layouts or pull prices of your hodl porfolio.\n\n**Trading features _(coming soon)_**\nAlpha will allow you to make instant paper or live trades on crypto exchanges with just a single message.\n\n**Other perks**\nThe premium package also comes with raised limits allowing you to make virtually infinite number requests.\n\n**Dedicated VPS _(only when purchasing the server package)_**\nA dedicated virtual private server will deliver cutting edge performance of Alpha in your discord server even during high load.\n\n__**P R I C I N G**__\nAlpha premium can be purchased with crypto directly or via Patreon (<https://www.patreon.com/AlphaBotSystem>). All users and servers are eligible for one month free trial (dedicated VPS is not included). Please, contact <@!361916376069439490> for more details.\n\n**Individuals**\nSubscription for individuals costs $15/month or $135/year ({:,.4f} BTC/month and {:,.4f} BTC/year or {:,.4f} ETH/month and {:,.4f} ETH/year respectively)\n\n**Servers**\nSubscription for servers costs $100/month or $900/year ({:,.4f} BTC/month and {:,.4f} BTC/year or {:,.4f} ETH/month and {:,.4f} ETH/year respectively) and covers every user in the server.".format(15 / prices["BTC/USDT"], 135 / prices["BTC/USDT"], 15 / prices["ETH/USDT"], 135 / prices["ETH/USDT"], 100 / prices["BTC/USDT"], 900 / prices["BTC/USDT"], 100 / prices["ETH/USDT"], 900 / prices["ETH/USDT"])
 
-				monthlyPremiumChannel = client.get_channel(509428086979297320)
-				annualPremiumChannel = client.get_channel(560475744258490369)
+				premiumChannel = client.get_channel(647165019578171432)
 				try:
-					monthlyPremiumMessage = await monthlyPremiumChannel.fetch_message(569205237802336287)
-					annualPremiumMessage = await annualPremiumChannel.fetch_message(569212387123789824)
-					await monthlyPremiumMessage.edit(content=monthlyPremiumText)
-					await annualPremiumMessage.edit(content=annualPremiumText)
+					premiumMessage = await premiumChannel.fetch_message(647521277963272192)
+					await premiumMessage.edit(content=premiumText)
 				except: pass
 		except asyncio.CancelledError: pass
 		except Exception as e:
@@ -415,42 +453,35 @@ class Alpha(discord.AutoShardedClient):
 			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
 			l.log("Warning", "timestamp: {}, debug info: {}, {}, line {}, description: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e))
 
-	async def update_system_status(self):
+	async def update_system_status(self, t):
 		try:
 			statisticsRef = db.document(u"alpha/statistics")
-			statisticsRef.set(self.statistics, merge=True)
+			statisticsRef.set({"{}-{}".format(t.month, t.year): {"discord": self.statistics}}, merge=True)
 
-			numOfCharts = "**{:,}** charts requested".format(self.statistics["c"] + self.statistics["hmap"])
-			numOfPrices = "**{:,}** prices pulled".format(self.statistics["d"] + self.statistics["p"] + self.statistics["v"])
-			numOfAlerts = "**{:,}** alerts set".format(self.statistics["alerts"])
-			numOfDetails = "**{:,}** coin details looked up".format(self.statistics["mcap"] + self.statistics["mk"])
-			numOfQuestions = "**{:,}** questions asked".format(self.statistics["alpha"])
-			numOfServers = "Used in **{:,}** servers by **{:,}** users".format(len(client.guilds), len(set(client.get_all_members())))
-			statsText = "{}\n{}\n{}\n{}\n{}\n{}".format(numOfCharts, numOfPrices, numOfAlerts, numOfDetails, numOfQuestions, numOfServers)
+			numOfCharts = ":chart_with_upwards_trend: {:,} charts requested".format(self.statistics["c"] + self.statistics["hmap"])
+			numOfAlerts = ":bell: {:,} alerts set".format(self.statistics["alerts"])
+			numOfPrices = ":money_with_wings: {:,} prices pulled".format(self.statistics["d"] + self.statistics["p"] + self.statistics["v"])
+			numOfDetails = ":tools: {:,} coin details looked up".format(self.statistics["mcap"] + self.statistics["mk"])
+			numOfQuestions = ":crystal_ball: {:,} questions asked".format(self.statistics["alpha"])
+			numOfServers = ":heart: Used in {:,} servers with {:,} members".format(len(client.guilds), len(client.users))
 
 			req = urllib.request.Request("https://status.discordapp.com", headers={"User-Agent": "Mozilla/5.0"})
 			webpage = str(urllib.request.urlopen(req).read())
 			isDiscordWorking = "All Systems Operational" in webpage
 
-			statusText = "Discord: **{}**\nAverage ping: **{:,.1f}** milliseconds\nProcessing **{:,.0f}** messages per minute".format("operational" if isDiscordWorking else "degraded performance", self.fusion.averagePing * 1000, self.fusion.averageMessages)
-			alphaText = "Alpha: **online**"
+			statisticsEmbed = discord.Embed(title="{}\n{}\n{}\n{}\n{}\n{}".format(numOfCharts, numOfAlerts, numOfPrices, numOfDetails, numOfQuestions, numOfServers), color=constants.colors["deep purple"])
+			discordStatusEmbed = discord.Embed(title=":bellhop: Average ping: {:,.1f} milliseconds\n:satellite: Processing {:,.0f} messages per minute\n:signal_strength: Discord: {}".format(self.fusion.averagePing * 1000, self.fusion.averageMessages, "all systems operational" if isDiscordWorking else "degraded performance"), color=constants.colors["deep purple" if isDiscordWorking else "gray"])
 
 			if sys.platform == "linux":
 				channel = client.get_channel(560884869899485233)
-				if self.statistics["c"] > 0 and sys.platform == "linux":
+				if self.statistics["c"] > 0:
 					try:
-						statsMessage = await channel.fetch_message(615114371508731914)
-						await statsMessage.edit(content=statsText)
+						statsMessage = await channel.fetch_message(640502810244415532)
+						await statsMessage.edit(embed=statisticsEmbed)
 					except: pass
-
 				try:
-					statusMessage = await channel.fetch_message(615119428899831878)
-					await statusMessage.edit(content=statusText)
-				except: pass
-
-				try:
-					alphaMessage = await channel.fetch_message(615137416780578819)
-					await alphaMessage.edit(content=alphaText)
+					statusMessage = await channel.fetch_message(640502825784180756)
+					await statusMessage.edit(embed=discordStatusEmbed)
 				except: pass
 		except asyncio.CancelledError: pass
 		except Exception as e:
@@ -458,43 +489,43 @@ class Alpha(discord.AutoShardedClient):
 			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
 			l.log("Warning", "timestamp: {}, debug info: {}, {}, line {}, description: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e))
 
-	async def update_price_status(self):
-		cycle = int(datetime.datetime.now().astimezone(pytz.utc).second/15)
+	async def update_price_status(self, t):
+		cycle = int(t.second / 15)
 		fetchPairs = {
-			0: (("bitmex", "MEX"), ("BTCUSD", "BTC/USD"), ("ETHUSD", "ETH/USD")),
-			1: (("binance", "BIN"), ("BTCUSD", "BTC/USDT"), ("ETHUSDT", "ETH/USDT")),
-			2: (("bitmex", "MEX"), ("BTCUSD", "BTC/USD"), ("ETHUSD", "ETH/USD")),
-			3: (("binance", "BIN"), ("BTCUSD", "BTC/USDT"), ("ETHUSDT", "ETH/USDT"))
+			0: (("bitmex", "MEX"), "BTC/USD", "ETH/USD"),
+			1: (("binance", "BIN"), "BTC/USDT", "ETH/USDT"),
+			2: (("bitmex", "MEX"), "BTC/USD", "ETH/USD"),
+			3: (("binance", "BIN"), "BTC/USDT", "ETH/USDT")
 		}
 
 		price1 = None
 		try:
-			if fetchPairs[cycle][1][0] in self.rateLimited["p"][fetchPairs[cycle][0][0]]:
-				price1 = self.rateLimited["p"][fetchPairs[cycle][0][0]][fetchPairs[cycle][1][0]]
+			if fetchPairs[cycle][1] in self.rateLimited["p"][fetchPairs[cycle][0][0]]:
+				price1 = self.rateLimited["p"][fetchPairs[cycle][0][0]][fetchPairs[cycle][1]]
 			else:
-				rawData = self.coinParser.exchanges[fetchPairs[cycle][0][0]].fetch_ohlcv(
-					fetchPairs[cycle][1][1],
+				priceData = self.coinParser.exchanges[fetchPairs[cycle][0][0]].fetch_ohlcv(
+					fetchPairs[cycle][1],
 					timeframe="1d",
-					since=(self.coinParser.exchanges[fetchPairs[cycle][0][0]].milliseconds() - 24 * 60 * 60 * 5 * 1000)
+					since=(self.coinParser.exchanges[fetchPairs[cycle][0][0]].milliseconds() - 24 * 60 * 60 * 3 * 1000)
 				)
-				price1 = (rawData[-1][4], rawData[-2][4])
+				price1 = [priceData[-1][4], priceData[-2][4]]
 				self.coinParser.lastBitcoinPrice = price1[0]
-				self.rateLimited["p"][fetchPairs[cycle][0][0]][fetchPairs[cycle][0][0]] = price1
-		except: self.coinParser.refresh_coins()
+				self.rateLimited["p"][fetchPairs[cycle][0][0]][fetchPairs[cycle][1]] = price1
+		except: pass
 
 		price2 = None
 		try:
-			if fetchPairs[cycle][2][0] in self.rateLimited["p"][fetchPairs[cycle][0][0]]:
-				price2 = self.rateLimited["p"][fetchPairs[cycle][0][0]][fetchPairs[cycle][2][0]]
+			if fetchPairs[cycle][2] in self.rateLimited["p"][fetchPairs[cycle][0][0]]:
+				price2 = self.rateLimited["p"][fetchPairs[cycle][0][0]][fetchPairs[cycle][2]]
 			else:
-				rawData = self.coinParser.exchanges[fetchPairs[cycle][0][0]].fetch_ohlcv(
-					fetchPairs[cycle][2][1],
+				priceData = self.coinParser.exchanges[fetchPairs[cycle][0][0]].fetch_ohlcv(
+					fetchPairs[cycle][2],
 					timeframe="1d",
-					since=(self.coinParser.exchanges[fetchPairs[cycle][0][0]].milliseconds() - 24 * 60 * 60 * 5 * 1000)
+					since=(self.coinParser.exchanges[fetchPairs[cycle][0][0]].milliseconds() - 24 * 60 * 60 * 3 * 1000)
 				)
-				price2 = (rawData[-1][4], rawData[-2][4])
-				self.rateLimited["p"][fetchPairs[cycle][0][0]][fetchPairs[cycle][2][0]] = price2
-		except: self.coinParser.refresh_coins()
+				price2 = [priceData[-1][4], priceData[-2][4]]
+				self.rateLimited["p"][fetchPairs[cycle][0][0]][fetchPairs[cycle][2]] = price2
+		except: pass
 
 		price1Text = " -" if price1 is None else "{:,.0f}".format(price1[0])
 		price2Text = " -" if price2 is None else "{:,.0f}".format(price2[0])
@@ -502,13 +533,8 @@ class Alpha(discord.AutoShardedClient):
 		try: await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="{} ₿ {} Ξ {}".format(fetchPairs[cycle][0][1], price1Text, price2Text)))
 		except: pass
 
-		await asyncio.sleep(self.coinParser.exchanges[fetchPairs[cycle][0][0]].rateLimit / 1000 * 2)
-		await asyncio.sleep(self.coinParser.exchanges[fetchPairs[cycle][0][0]].rateLimit / 1000 * 2)
-
-		try:
-			self.rateLimited["p"][fetchPairs[cycle][0][0]].pop(fetchPairs[cycle][1][0], None)
-			self.rateLimited["p"][fetchPairs[cycle][0][0]].pop(fetchPairs[cycle][2][0], None)
-		except: pass
+		threading.Thread(target=self.clear_rate_limit_cache, args=(fetchPairs[cycle][0][0], fetchPairs[cycle][1], ["p"], self.coinParser.exchanges[fetchPairs[cycle][0][0]].rateLimit / 1000 * 2)).start()
+		threading.Thread(target=self.clear_rate_limit_cache, args=(fetchPairs[cycle][0][0], fetchPairs[cycle][2], ["p"], self.coinParser.exchanges[fetchPairs[cycle][0][0]].rateLimit / 1000 * 2)).start()
 
 	async def send_alerts(self):
 		try:
@@ -517,15 +543,22 @@ class Alpha(discord.AutoShardedClient):
 				alertMessages = await incomingAlertsChannel.history(limit=None).flatten()
 				for message in reversed(alertMessages):
 					userId, alertMessage = message.content.split(": ", 1)
-					alertUser = client.get_user(int(userId))
+					embed = discord.Embed(title=alertMessage, color=constants.colors["deep purple"])
+					embed.set_author(name="Alert triggered", icon_url=firebase_storage.icon)
 
 					try:
-						await alertUser.send(alertMessage)
+						alertUser = client.get_user(int(userId))
+						await alertUser.send(embed=embed)
 					except:
-						outgoingAlertsChannel = client.get_channel(595954290409865226)
-						try: await outgoingAlertsChannel.send("<@!{}>! {}".format(alertUser.id, alertMessage))
-						except: pass
+						try:
+							outgoingAlertsChannel = client.get_channel(595954290409865226)
+							outgoingAlertsChannel.send(content="<@!{}>!".format(alertUser.id), embed=embed)
+						except Exception as e:
+							exc_type, exc_obj, exc_tb = sys.exc_info()
+							fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+							l.log("Warning", "timestamp: {}, debug info: {}, {}, line {}, description: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e))
 
+				for message in reversed(alertMessages):
 					try: await message.delete()
 					except: pass
 		except asyncio.CancelledError: pass
@@ -536,35 +569,17 @@ class Alpha(discord.AutoShardedClient):
 
 	def server_ping(self):
 		try:
-			if sys.platform == "linux":
-				for i in range(5):
-					try:
-						db.document(u'fusion/alpha').set({"lastUpdate": {"timestamp": time.time(), "time": datetime.datetime.now().strftime("%m. %d. %Y, %H:%M")}}, merge=True)
-						break
-					except Exception as e:
-						if i == 4:
-							exc_type, exc_obj, exc_tb = sys.exc_info()
-							fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-							l.log("Warning", "({}) debug info: {}, {}, line {}, description: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e))
-						else: time.sleep(1)
+			if sys.platform == "linux" and self.lastMessageTimestamp is not None:
+				db.document(u'fusion/alpha').set({"lastUpdate": {"timestamp": self.lastMessageTimestamp[0], "time": self.lastMessageTimestamp[1].strftime("%m. %d. %Y, %H:%M")}}, merge=True)
 
-			for i in range(5):
-				try:
-					instances = db.collection(u'fusion').stream()
-					for instance in instances:
-						num = str(instance.id)
-						if num.startswith("instance"):
-							num = int(str(instance.id).split("-")[-1])
-							instance = instance.to_dict()
-							if instance["lastUpdate"]["timestamp"] + 360 < time.time():
-								l.log("Warning", "timestamp: {}, description: Fusion instance {} is not responding".format(Utils.get_current_date(), num))
-					break
-				except Exception as e:
-					if i == 4:
-						exc_type, exc_obj, exc_tb = sys.exc_info()
-						fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-						l.log("Warning", "({}) debug info: {}, {}, line {}, description: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e))
-					else: time.sleep(1)
+			instances = db.collection(u'fusion').stream()
+			for instance in instances:
+				num = str(instance.id)
+				if num.startswith("instance"):
+					num = int(str(instance.id).split("-")[-1])
+					instance = instance.to_dict()
+					if instance["lastUpdate"]["timestamp"] + 360 < time.time():
+						l.log("Warning", "timestamp: {}, description: Fusion instance {} is not responding".format(Utils.get_current_date(), num))
 		except Exception as e:
 			exc_type, exc_obj, exc_tb = sys.exc_info()
 			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
@@ -572,43 +587,49 @@ class Alpha(discord.AutoShardedClient):
 
 	async def update_queue(self):
 		while True:
-			n = datetime.datetime.now().astimezone(pytz.utc)
-			await asyncio.sleep((15 - n.second % 15) - ((time.time() * 1000) % 1000) / 1000)
+			await asyncio.sleep(Utils.seconds_until_cycle())
 			if not self.isBotReady: continue
-			timeframes = Utils.get_accepted_timeframes()
+			t = datetime.datetime.now().astimezone(pytz.utc)
+			timeframes = Utils.get_accepted_timeframes(t)
 
-			await self.update_price_status()
+			await self.update_price_status(t)
 			await self.send_alerts()
 			if "5m" in timeframes:
-				await self.update_system_status()
 				self.server_ping()
+				await self.update_system_status(t)
 			if "1H" in timeframes:
 				await self.update_premium_message()
 				await self.security_check()
-				await self.update_subscribers()
-			if "1D" in timeframes:
-				self.coinGeckoLink.refresh_coingecko_coin_list()
+				await self.update_properties()
+			if "4H" in timeframes:
 				self.update_fusion_queue()
+			if "1D" in timeframes:
+				self.coinGeckoConnection.refresh_coingecko_datasets()
+				if t.day == 1 and alphaSettings["lastStatsSnapshot"] != t.month:
+					self.fusion.push_active_users(bucket, t)
 
 	async def on_message(self, message):
 		try:
+			if message.channel.id == 595619229839917069: print("\n\n\n")
 			guildId = message.guild.id if message.guild is not None else -1
+			authorId = message.webhook_id if message.webhook_id is not None else message.author.id
+			self.lastMessageTimestamp = (datetime.datetime.timestamp(pytz.utc.localize(message.created_at)), pytz.utc.localize(message.created_at))
 			if self.dedicatedGuild != 0 and self.dedicatedGuild != guildId: return
 
 			isSelf = message.author == client.user
-			isUserBlocked = message.author.id in constants.blockedUsers if not message.author.bot else any(e in message.author.name.lower() for e in constants.blockedBotNames) or message.author.id in constants.blockedBots
+			isUserBlocked = authorId in constants.blockedUsers if not message.author.bot else any(e in message.author.name.lower() for e in constants.blockedBotNames) or authorId in constants.blockedBots
 			isChannelBlocked = message.channel.id in constants.blockedChannels or guildId in constants.blockedGuilds
-			hasContent = message.clean_content != ""
+			hasContent = message.clean_content != "" or isSelf
 
 			if not self.isBotReady or isUserBlocked or isChannelBlocked or not hasContent: return
 
-			isPersonalPremium = message.author.id in self.subscribedUsers
+			isPersonalPremium = authorId in self.subscribedUsers
 			isServerPremium = guildId in self.subscribedGuilds
 			isPremium = isPersonalPremium or isServerPremium
 
 			raw = " ".join(message.clean_content.lower().split())
 			sentMessages = []
-			shortcutsEnabled = True
+			shortcutsEnabled = True if guildId not in self.guildProperties else self.guildProperties[guildId]["settings"]["shortcuts"]
 			presetUsed = False
 			shortcutUsed = False
 			limit = 30 if isPremium else 10
@@ -616,57 +637,79 @@ class Alpha(discord.AutoShardedClient):
 			hasSendPermission = (True if message.guild is None else message.guild.me.permissions_in(message.channel).send_messages)
 
 			if not raw.startswith("preset "):
-				if isPremium:
-					usedPresets = []
-					if message.author.id in self.userProperties: raw, presetUsed, usedPresets = Presets.process_presets(raw, self.userProperties[message.author.id])
-					if not presetUsed and guildId in self.guildProperties: raw, presetUsed, usedPresets = Presets.process_presets(raw, self.guildProperties[guildId])
+				parsedPresets = []
+				if message.author.id in self.userProperties: raw, presetUsed, parsedPresets = Presets.process_presets(raw, self.userProperties[message.author.id])
+				if not presetUsed and guildId in self.guildProperties: raw, presetUsed, parsedPresets = Presets.process_presets(raw, self.guildProperties[guildId])
 
-					if guildId != -1:
-						if guildId not in self.usedPresetsCache: self.usedPresetsCache[guildId] = []
-						for preset in usedPresets:
-							if preset not in self.usedPresetsCache[guildId]: self.usedPresetsCache[guildId].append(preset)
-						self.usedPresetsCache[guildId] = self.usedPresetsCache[guildId][-3:]
-				elif guildId in self.usedPresetsCache:
-					presetUsed = False
+				if not presetUsed and guildId in self.usedPresetsCache:
 					for preset in self.usedPresetsCache[guildId]:
 						if preset["phrase"] == raw:
-							presetUsed = True
+							if preset["phrase"] not in [p["phrase"] for p in parsedPresets]:
+								parsedPresets = [preset]
+								presetUsed = False
+								break
 
-			isCommand = raw.startswith(("alpha ", "alert ", "preset ", "c ", "p ", "d ", "v ", "hmap ", "mcap ", "mc", "mk ", "paper ")) or raw in ["hmap"]
-
-			if presetUsed and isCommand:
 				if isPremium:
+					if presetUsed:
+						if guildId != -1:
+							if guildId not in self.usedPresetsCache: self.usedPresetsCache[guildId] = []
+							for preset in parsedPresets:
+								if preset not in self.usedPresetsCache[guildId]: self.usedPresetsCache[guildId].append(preset)
+							self.usedPresetsCache[guildId] = self.usedPresetsCache[guildId][-3:]
+
+						embed = discord.Embed(title="Running `{}` command from personal preset".format(raw), color=constants.colors["light blue"])
+						try: sentMessages.append(await message.channel.send(embed=embed))
+						except: pass
+					elif len(parsedPresets) != 0:
+						embed = discord.Embed(title="Do you want to add preset `{}` → `{}` to your account?".format(parsedPresets[0]["phrase"], parsedPresets[0]["shortcut"]), color=constants.colors["light blue"])
+						try: addPresetMessage = await message.channel.send(embed=embed)
+						except: pass
+
+						def confirm_order(m):
+							if m.author.id == message.author.id:
+								response = ' '.join(m.clean_content.lower().split())
+								if response.startswith(("y", "yes", "sure", "confirm", "execute")): return True
+								elif response.startswith(("n", "no", "cancel", "discard", "reject")): raise Exception()
+
+						try:
+							this = await client.wait_for('message', timeout=60.0, check=confirm_order)
+						except:
+							embed = discord.Embed(title="Canceled", description="~~Do you want to add `{}` → `{}` to your account?~~".format(parsedPresets[0]["phrase"], parsedPresets[0]["shortcut"]), color=constants.colors["gray"])
+							try: await addPresetMessage.edit(embed=embed)
+							except: pass
+							return
+						else:
+							raw = "preset add {} {}".format(parsedPresets[0]["phrase"], parsedPresets[0]["shortcut"])
+				elif len(parsedPresets) != 0:
+					try: await message.channel.send(content="Presets are available for premium members only. {}".format("Join our server to learn more: https://discord.gg/H9sS6WK" if message.guild.id != 414498292655980583 else "Check <#509428086979297320> or <#560475744258490369> to learn more."))
+					except Exception as e: await self.unknown_error(message, authorId, e)
+
+			raw, shortcutUsed = Utils.shortcuts(raw, shortcutsEnabled)
+			useMute = presetUsed or shortcutUsed
+			isCommand = raw.startswith(("alpha ", "alert ", "alerts", "preset ", "c ", "p ", "d ", "v ", "hmap ", "mcap ", "mc ", "mk ", "convert ", "paper ")) and not isSelf
+
+			if guildId != -1 and isCommand:
+				if message.guild.name in self.alphaSettings["tosBlacklist"]:
+					embed = discord.Embed(title="This server is violating Alpha terms of service", description="{}\n\nFor more info, join Alpha server".format(constants.termsOfService), color=0x000000)
 					try:
-						presetMessage = await message.channel.send("Running `{}` command from preset".format(raw))
-						sentMessages.append(presetMessage)
+						await message.channel.send(embed=embed)
+						await message.channel.send(content="https://discord.gg/GQeDE85")
 					except: pass
-				else:
-					try: await message.channel.send("Presets are available for premium members only.\n\n{}".format(constants.premiumMessage))
-					except: pass
-					return
-
-			if guildId != -1:
-				if guildId in self.guildProperties: shortcutsEnabled = self.guildProperties[guildId]["functions"]["shortcuts"]
-
-				if isCommand:
-					if message.guild.name in self.alphaSettings["tosBlacklist"]:
-						await message.channel.send("This server is violating terms of service:\n\n{}\n\nFor more info, join Alpha server:".format(constants.termsOfService))
-						await message.channel.send("https://discord.gg/GQeDE85")
-
-			raw, isCommand, shortcutUsed = Utils.shortcuts(raw, isCommand, shortcutsEnabled)
-
-			useMute = isCommand and (presetUsed or shortcutUsed)
+				# elif (True if guildId not in self.guildProperties else not self.guildProperties[guildId]["hasDoneSetup"]):
+				# 	embed = discord.Embed(title="Thanks for adding Alpha to your server, we're thrilled to have you onboard. We think you're going to love what Alpha can do. Before you start using it, you must complete a short setup process. Type `alpha setup` to begin.", color=constants.colors["pink"])
+				# 	try: await message.channel.send(embed=embed)
+				# 	except Exception as e: await self.unknown_error(message, authorId, e)
 
 			if raw.startswith("a "):
 				if message.author.bot: return
 
 				command = raw.split(" ", 1)[1]
 				if command == "help":
-					await self.help(message, raw, shortcutUsed)
+					await self.help(message, authorId, raw, shortcutUsed)
 					return
 				elif command == "invite":
-					try: await message.channel.send("https://discordapp.com/oauth2/authorize?client_id=401328409499664394&scope=bot&permissions=604372033")
-					except: await self.unknown_error(message)
+					try: await message.channel.send(embed=discord.Embed(title="https://discordapp.com/oauth2/authorize?client_id=401328409499664394&scope=bot&permissions=604372033", color=constants.colors["pink"]))
+					except Exception as e: await self.unknown_error(message, authorId, e)
 					return
 				if guildId != -1:
 					if command.startswith("assistant"):
@@ -678,12 +721,12 @@ class Alpha(discord.AutoShardedClient):
 							if newVal is not None:
 								serverSettingsRef = db.document(u"alpha/settings/servers/{}".format(guildId))
 								serverSettings = serverSettingsRef.get().to_dict()
-								serverSettings = Utils.updateServerSetting(serverSettings, "functions", sub="assistant", toVal=newVal)
+								serverSettings = Utils.updateServerSetting(serverSettings, "settings", sub="assistant", toVal=newVal)
 								serverSettingsRef.set(serverSettings, merge=True)
 								self.guildProperties[guildId] = copy.deepcopy(serverSettings)
 
-								try: await message.channel.send("Google Assistant settings saved for **{}** server".format(message.guild.name))
-								except: await self.unknown_error(message)
+								try: await message.channel.send(embed=discord.Embed(title="Google Assistant settings saved for *{}* server".format(message.guild.name), color=constants.colors["pink"]))
+								except Exception as e: await self.unknown_error(message, authorId, e)
 						return
 					elif command.startswith("shortcuts"):
 						if message.author.guild_permissions.administrator:
@@ -694,34 +737,30 @@ class Alpha(discord.AutoShardedClient):
 							if newVal is not None:
 								serverSettingsRef = db.document(u"alpha/settings/servers/{}".format(guildId))
 								serverSettings = serverSettingsRef.get().to_dict()
-								serverSettings = Utils.updateServerSetting(serverSettings, "functions", sub="shortcuts", toVal=newVal)
+								serverSettings = Utils.updateServerSetting(serverSettings, "settings", sub="shortcuts", toVal=newVal)
 								serverSettingsRef.set(serverSettings, merge=True)
 								self.guildProperties[guildId] = copy.deepcopy(serverSettings)
 
-								try: await message.channel.send("Shortcuts settings saved for **{}** server".format(message.guild.name))
-								except: await self.unknown_error(message)
+								try: await message.channel.send(embed=discord.Embed(title="Shortcuts settings saved for *{}* server".format(message.guild.name), color=constants.colors["pink"]))
+								except Exception as e: await self.unknown_error(message, authorId, e)
 						return
 					elif command.startswith("autodelete"):
 						if message.author.guild_permissions.administrator:
-							if message.guild.me.guild_permissions.manage_messages:
-								newVal = None
-								if command == "autodelete disable": newVal = False
-								elif command == "autodelete enable": newVal = True
+							newVal = None
+							if command == "autodelete disable": newVal = False
+							elif command == "autodelete enable": newVal = True
 
-								if newVal is not None:
-									serverSettingsRef = db.document(u"alpha/settings/servers/{}".format(guildId))
-									serverSettings = serverSettingsRef.get().to_dict()
-									serverSettings = Utils.updateServerSetting(serverSettings, "functions", sub="autodelete", toVal=newVal)
-									serverSettingsRef.set(serverSettings, merge=True)
-									self.guildProperties[guildId] = copy.deepcopy(serverSettings)
+							if newVal is not None:
+								serverSettingsRef = db.document(u"alpha/settings/servers/{}".format(guildId))
+								serverSettings = serverSettingsRef.get().to_dict()
+								serverSettings = Utils.updateServerSetting(serverSettings, "settings", sub="autodelete", toVal=newVal)
+								serverSettingsRef.set(serverSettings, merge=True)
+								self.guildProperties[guildId] = copy.deepcopy(serverSettings)
 
-									try: await message.channel.send("Autodelete settings saved for **{}** server".format(message.guild.name))
-									except: await self.unknown_error(message)
-							else:
-								try: await message.channel.send("To change autodelete settings, make sure Alpha has permission to manage messages")
-								except: await self.unknown_error(message)
+								try: await message.channel.send(embed=discord.Embed(title="Autodelete settings saved for *{}* server".format(message.guild.name), color=constants.colors["pink"]))
+								except Exception as e: await self.unknown_error(message, authorId, e)
 						return
-				if message.author.id in [361916376069439490, 164073578696802305, 390170634891689984]:
+				if authorId in [361916376069439490, 164073578696802305, 390170634891689984]:
 					if command.startswith("premium user"):
 						subscription = raw.split("premium user ", 1)
 						if len(subscription) == 2:
@@ -729,62 +768,60 @@ class Alpha(discord.AutoShardedClient):
 							if len(parameters) == 2:
 								userId, plan = parameters
 								trial = False
-								try:
-									if plan == "trial": plan, trial = 1, True
+								if plan == "trial": plan, trial = 1, True
 
-									alphaServer = client.get_guild(414498292655980583)
-									recepient = client.get_user(int(userId))
-									role = discord.utils.get(alphaServer.roles, id=484387309303758848)
-
-									fetchedSettingsRef = db.document(u"alpha/settings/users/{}".format(int(userId)))
-									fetchedSettings = fetchedSettingsRef.get().to_dict()
-									fetchedSettings = Utils.createUserSettings(fetchedSettings)
-
-									hadTrial = fetchedSettings["premium"]["hadTrial"]
-									wasSubscribed = fetchedSettings["premium"]["subscribed"]
-									if hadTrial and trial:
-										if not wasSubscribed:
-											try:
-												await message.channel.send("This user already had a trial")
-												await recepient.send("Your Alpha Premium subscription trial has already expired")
-											except: pass
-										try: await message.delete()
-										except: pass
-										return
-
-									lastTimestamp = fetchedSettings["premium"]["timestamp"]
-									timestamp = (lastTimestamp if time.time() < lastTimestamp else time.time()) + 2635200 * int(plan)
-									date = datetime.datetime.fromtimestamp(timestamp)
-									fetchedSettings["premium"] = {"subscribed": True, "hadTrial": hadTrial or trial, "hadWarning": False, "timestamp": timestamp, "date": date.strftime("%m. %d. %Y"), "plan": int(plan)}
-
-									fetchedSettingsRef.set(fetchedSettings, merge=True)
-									self.userProperties[int(userId)] = copy.deepcopy(fetchedSettings)
-									self.subscribedUsers.append(int(userId))
-									try: await alphaServer.get_member(int(userId)).add_roles(role)
+								allUsers = [e.id for e in client.users]
+								if int(userId) not in allUsers:
+									try: await message.channel.send(embed=discord.Embed(title="No users with this id found", color=constants.colors["gray"]))
 									except: pass
+									return
+								recepient = client.get_user(int(userId))
 
-									if int(plan) > 0:
-										if wasSubscribed:
-											try:
-												await recepient.send("Your Alpha Premium subscription was extended.\n*Current expiry date: {}*".format(fetchedSettings["premium"]["date"]))
-											except:
-												outgoingAlertsChannel = client.get_channel(595954290409865226)
-												try: await outgoingAlertsChannel.send("<@!{}>, your Alpha Premium subscription was extended.\n*Current expiry date: {}*".format(userId, fetchedSettings["premium"]["date"]))
-												except: pass
-										else:
-											try:
-												await recepient.send("Enjoy your Alpha Premium subscription.\n*Current expiry date: {}*".format(fetchedSettings["premium"]["date"]))
-											except:
-												outgoingAlertsChannel = client.get_channel(595954290409865226)
-												try: await outgoingAlertsChannel.send("<@!{}>, enjoy your Alpha Premium subscription.\n*Current expiry date: {}*".format(userId, fetchedSettings["premium"]["date"]))
-												except: pass
+								alphaServer = client.get_guild(414498292655980583)
+								role = discord.utils.get(alphaServer.roles, id=484387309303758848)
+
+								fetchedSettingsRef = db.document(u"alpha/settings/users/{}".format(int(userId)))
+								fetchedSettings = fetchedSettingsRef.get().to_dict()
+								fetchedSettings = Utils.createUserSettings(fetchedSettings)
+
+								hadTrial = fetchedSettings["premium"]["hadTrial"]
+								wasSubscribed = fetchedSettings["premium"]["subscribed"]
+								if hadTrial and trial:
+									if not wasSubscribed:
+										try: await message.channel.send(embed=discord.Embed(title="This user already had a trial", color=constants.colors["gray"]))
+										except: pass
 									try: await message.delete()
 									except: pass
-								except Exception as e:
-									exc_type, exc_obj, exc_tb = sys.exc_info()
-									fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-									try: await message.channel.send("[Error]: timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, raw))
-									except: pass
+									return
+
+								lastTimestamp = fetchedSettings["premium"]["timestamp"]
+								timestamp = (lastTimestamp if time.time() < lastTimestamp else time.time()) + 2635200 * int(plan)
+								date = datetime.datetime.utcfromtimestamp(timestamp)
+								fetchedSettings["premium"] = {"subscribed": True, "hadTrial": hadTrial or trial, "hadWarning": False, "timestamp": timestamp, "date": date.strftime("%m. %d. %Y"), "plan": int(plan)}
+
+								fetchedSettingsRef.set(fetchedSettings, merge=True)
+								self.userProperties[int(userId)] = copy.deepcopy(fetchedSettings)
+								self.subscribedUsers.append(int(userId))
+								try: await alphaServer.get_member(int(userId)).add_roles(role)
+								except: pass
+
+								if int(plan) > 0:
+									if wasSubscribed:
+										try:
+											await recepient.send(embed=discord.Embed(title="Your Alpha Premium subscription was extended. Current expiry date: {}".format(fetchedSettings["premium"]["date"]), color=constants.colors["pink"]))
+										except:
+											outgoingAlertsChannel = client.get_channel(595954290409865226)
+											try: await outgoingAlertsChannel.send(content="<@!{}>".format(userId), embed=discord.Embed(title="Your Alpha Premium subscription was extended. Current expiry date: {}".format(fetchedSettings["premium"]["date"]), color=constants.colors["pink"]))
+											except: pass
+									else:
+										try:
+											await recepient.send(embed=discord.Embed(title="Enjoy your Alpha Premium subscription. Current expiry date: {}".format(fetchedSettings["premium"]["date"]), color=constants.colors["pink"]))
+										except:
+											outgoingAlertsChannel = client.get_channel(595954290409865226)
+											try: await outgoingAlertsChannel.send(content="<@!{}>".format(userId), embed=discord.Embed(title="Enjoy your Alpha Premium subscription. Current expiry date: {}".format(fetchedSettings["premium"]["date"]), color=constants.colors["pink"]))
+											except: pass
+								try: await message.delete()
+								except: pass
 						return
 					elif command.startswith("premium server"):
 						subscription = raw.split("premium server ", 1)
@@ -793,577 +830,484 @@ class Alpha(discord.AutoShardedClient):
 							if len(parameters) == 2:
 								guildId, plan = parameters
 								trial = False
-								try:
-									if plan == "trial": plan, trial = 1, True
+								if plan == "trial": plan, trial = 1, True
 
-									setGuild = client.get_guild(int(guildId))
-									recepients = []
-									for member in setGuild.members:
-										if member.guild_permissions.administrator:
-											recepients.append(member)
+								allGuilds = [e.id for e in client.guilds]
+								if int(guildId) not in allGuilds:
+									try: await message.channel.send(embed=discord.Embed(title="No servers with this id found", color=constants.colors["gray"]))
+									except: pass
+									return
 
-									fetchedSettingsRef = db.document(u"alpha/settings/servers/{}".format(int(guildId)))
-									fetchedSettings = fetchedSettingsRef.get().to_dict()
-									fetchedSettings = Utils.createServerSetting(fetchedSettings)
+								setGuild = client.get_guild(int(guildId))
+								recepients = []
+								for member in setGuild.members:
+									if member.guild_permissions.administrator:
+										recepients.append(member)
 
-									hadTrial = fetchedSettings["premium"]["hadTrial"]
-									wasSubscribed = fetchedSettings["premium"]["subscribed"]
-									if hadTrial and trial:
-										if not wasSubscribed:
-											for recepient in recepients:
-												try: await recepient.send("Alpha Premium subscription trial for *{}* server has already expired".format(setGuild.name))
-												except: pass
-										try: await message.delete()
+								fetchedSettingsRef = db.document(u"alpha/settings/servers/{}".format(int(guildId)))
+								fetchedSettings = fetchedSettingsRef.get().to_dict()
+								fetchedSettings = Utils.createServerSetting(fetchedSettings)
+
+								hadTrial = fetchedSettings["premium"]["hadTrial"]
+								wasSubscribed = fetchedSettings["premium"]["subscribed"]
+								if hadTrial and trial:
+									if not wasSubscribed:
+										try: await message.channel.send(embed=discord.Embed(title="This server already had a trial", color=constants.colors["gray"]))
 										except: pass
-										return
-
-									lastTimestamp = fetchedSettings["premium"]["timestamp"]
-									timestamp = (lastTimestamp if time.time() < lastTimestamp else time.time()) + 2635200 * int(plan)
-									date = datetime.datetime.fromtimestamp(timestamp)
-									fetchedSettings["premium"] = {"subscribed": True, "hadTrial": hadTrial or trial, "hadWarning": False, "timestamp": timestamp, "date": date.strftime("%m. %d. %Y"), "plan": int(plan)}
-
-									fetchedSettingsRef.set(fetchedSettings, merge=True)
-									self.guildProperties[int(guildId)] = copy.deepcopy(fetchedSettings)
-									self.subscribedGuilds.append(int(guildId))
-
-									if int(plan) > 0:
-										if wasSubscribed:
-											for recepient in recepients:
-												try: await recepient.send("Alpha Premium subscription for **{}** server was extended.\n*Current expiry date: {}*".format(setGuild.name, fetchedSettings["premium"]["date"]))
-												except: pass
-										else:
-											for recepient in recepients:
-												try: await recepient.send("Enjoy Alpha Premium subscription for **{}** server.\n*Current expiry date: {}*".format(setGuild.name, fetchedSettings["premium"]["date"]))
-												except: pass
 									try: await message.delete()
 									except: pass
-								except Exception as e:
-									exc_type, exc_obj, exc_tb = sys.exc_info()
-									fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-									try: await message.channel.send("[Error]: timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, raw))
-									except: pass
+									return
+
+								lastTimestamp = fetchedSettings["premium"]["timestamp"]
+								timestamp = (lastTimestamp if time.time() < lastTimestamp else time.time()) + 2635200 * int(plan)
+								date = datetime.datetime.utcfromtimestamp(timestamp)
+								fetchedSettings["premium"] = {"subscribed": True, "hadTrial": hadTrial or trial, "hadWarning": False, "timestamp": timestamp, "date": date.strftime("%m. %d. %Y"), "plan": int(plan)}
+
+								fetchedSettingsRef.set(fetchedSettings, merge=True)
+								self.guildProperties[int(guildId)] = copy.deepcopy(fetchedSettings)
+								self.subscribedGuilds.append(int(guildId))
+
+								if int(plan) > 0:
+									if wasSubscribed:
+										try:
+											await recepient.send(embed=discord.Embed(title="Alpha Premium subscription for {} server was extended. Current expiry date: {}".format(setGuild.name, fetchedSettings["premium"]["date"]), color=constants.colors["pink"]))
+										except:
+											outgoingAlertsChannel = client.get_channel(595954290409865226)
+											try: await outgoingAlertsChannel.send(content="<@!{}>".format(userId), embed=discord.Embed(title="Alpha Premium subscription for {} server was extended. Current expiry date: {}".format(setGuild.name, fetchedSettings["premium"]["date"]), color=constants.colors["pink"]))
+											except: pass
+									else:
+										try:
+											await recepient.send(embed=discord.Embed(title="Enjoy Alpha Premium subscription for {} server. Current expiry date: {}".format(setGuild.name, fetchedSettings["premium"]["date"]), color=constants.colors["pink"]))
+										except:
+											outgoingAlertsChannel = client.get_channel(595954290409865226)
+											try: await outgoingAlertsChannel.send(content="<@!{}>".format(userId), embed=discord.Embed(title="Enjoy your Alpha Premium subscription. Current expiry date: {}".format(fetchedSettings["premium"]["date"]), color=constants.colors["pink"]))
+											except: pass
+								try: await message.delete()
+								except: pass
 						return
 					elif command == "restart":
 						self.isBotReady = False
 						channel = client.get_channel(560884869899485233)
 						try:
 							await message.delete()
-							alphaMessage = await channel.fetch_message(615137416780578819)
-							await alphaMessage.edit(content="Alpha: **restarting**")
+							alphaMessage = await channel.fetch_message(640502830062632960)
+							onlineEmbed = discord.Embed(title=":warning: Alpha: restarting", color=constants.colors["gray"])
+							await alphaMessage.edit(embed=onlineEmbed)
 						except: pass
-						l.log("Status", "A restart has been requested by {}. Timestamp: {}".format(message.author.name, Utils.get_current_date()), post=False)
+						l.log("Status", "A restart has been requested by {} at {}".format(message.author.name, Utils.get_current_date()))
 						raise KeyboardInterrupt
 					elif command == "reboot":
 						self.isBotReady = False
 						channel = client.get_channel(560884869899485233)
 						try:
 							await message.delete()
-							alphaMessage = await channel.fetch_message(615137416780578819)
-							await alphaMessage.edit(content="Alpha: **restarting**")
+							alphaMessage = await channel.fetch_message(640502830062632960)
+							onlineEmbed = discord.Embed(title=":warning: Alpha: restarting", color=constants.colors["gray"])
+							await alphaMessage.edit(embed=onlineEmbed)
 						except: pass
-						l.log("Status", "A reboot has been requested by {}. Timestamp: {}".format(message.author.name, Utils.get_current_date()), post=False)
+						l.log("Status", "A reboot has been requested by {} at {}".format(message.author.name, Utils.get_current_date()))
 						if sys.platform == "linux": os.system("sudo reboot")
+						return
+					elif command in ["performance", "perf"]:
+						try: await message.delete()
+						except: pass
+						queueLen1 = len(self.imageProcessor.screengrabLock[0])
+						queueLen2 = len(self.imageProcessor.screengrabLock[1])
+						queueLen3 = len(self.imageProcessor.screengrabLock[2])
+						try: await message.channel.send(embed=discord.Embed(title="Screengrab queue 1: {}\nScreengrab queue 2: {}\nScreengrab queue 3: {}".format(queueLen1, queueLen2, queueLen3), color=constants.colors["pink"]))
+						except: pass
 						return
 					else:
 						await self.fusion.process_private_function(client, message, raw, self.coinParser.exchanges, guildId, self.coinParser.lastBitcoinPrice, db)
 						return
 			elif not isSelf and isCommand and hasSendPermission and not hasMentions:
-				if message.content.startswith(("alpha ", "<@401328409499664394> ", "alpha, ", "<@401328409499664394>, ")):
+				if message.content.lower().startswith(("alpha ", "alpha, ")):
+					self.fusion.process_active_user(authorId, "alpha")
 					if message.author.bot:
-						if not await self.bot_verification(message, raw): return
+						if not await self.bot_verification(message, authorId, raw): return
 
-					command = raw.split(" ")[1]
-					if command == "help":
-						await self.help(message, raw, shortcutUsed)
-					elif command == "premium":
-						try: await message.channel.send(constants.premiumMessage)
-						except: await self.unknown_error(message)
-					elif command == "invite":
-						try: await message.channel.send("https://discordapp.com/oauth2/authorize?client_id=401328409499664394&scope=bot&permissions=604372033")
-						except: await self.unknown_error(message)
-					elif command == "status":
-						try: await message.channel.send("Average ping: **{:,.1f}** milliseconds\nProcessing **{:,.0f}** messages per minute".format(self.fusion.averagePing * 1000, self.fusion.averageMessages))
-						except: await self.unknown_error(message)
-					elif (self.guildProperties[guildId]["functions"]["assistant"] if guildId in self.guildProperties else True):
-						self.statistics["alpha"] += 1
-						rawCaps = message.content.split(" ", 1)[1]
-						if len(rawCaps) > 500: return
-
+					self.statistics["alpha"] += 1
+					rawCaps = " ".join(message.clean_content.split()).split(" ", 1)[1]
+					if len(rawCaps) > 500: return
+					if (self.guildProperties[guildId]["settings"]["assistant"] if guildId in self.guildProperties else True):
 						try: await message.channel.trigger_typing()
 						except: pass
-
-						if await self.funnyReplies(message, raw): return
-						with AlphaAssistant("en-US", "nlc-bot-36685-nlc-bot-9w6rhy", "Alpha", False, grpc_channel, 60 * 3 + 5) as assistant:
-							try: response, response_html = assistant.assist(text_query=rawCaps)
-							except:
-								await self.unknown_error(message)
-								return
-							if response	is not None and response != "":
-								if "Here are some things you can ask for:" in response:
-									await self.help(message, raw, shortcutUsed)
-								elif any(trigger in response for trigger in constants.badPunTrigger):
-									with open("bot/assets/jokes.json") as json_data:
-										try: await message.channel.send("Here's a pun that might make you laugh :smile:\n{}".format(random.choice(json.load(json_data))))
-										except: await self.unknown_error(message)
-								else:
-									for override in constants.messageOverrides:
-										for trigger in constants.messageOverrides[override]:
-											if raw == trigger:
-												try: await message.channel.send(override)
-												except: pass
-												return
-									try: await message.channel.send(response.replace("Google Assistant", "Alpha"))
-									except: await self.unknown_error(message)
-							else:
-								try: await message.channel.send("I can't help you with that.")
-								except: await self.unknown_error(message)
+					fallThrough, response = self.assistant.process_reply(raw, rawCaps, self.guildProperties[guildId]["settings"]["assistant"] if guildId in self.guildProperties else True)
+					if fallThrough:
+						if response == "help":
+							await self.help(message, authorId, raw, shortcutUsed)
+						elif response == "premium":
+							try: await message.channel.send(content="Join our server to learn more: https://discord.gg/H9sS6WK" if message.guild.id != 414498292655980583 else "Check <#509428086979297320> or <#560475744258490369> to learn more.")
+							except Exception as e: await self.unknown_error(message, authorId, e)
+						elif response == "invite":
+							try: await message.channel.send(embed=discord.Embed(title="https://discordapp.com/oauth2/authorize?client_id=401328409499664394&scope=bot&permissions=604372033", color=constants.colors["pink"]))
+							except Exception as e: await self.unknown_error(message, authorId, e)
+						elif response == "status":
+							req = urllib.request.Request("https://status.discordapp.com", headers={"User-Agent": "Mozilla/5.0"})
+							webpage = str(urllib.request.urlopen(req).read())
+							isDiscordWorking = "All Systems Operational" in webpage
+							try: await message.channel.send(embed=discord.Embed(title=":bellhop: Average ping: {:,.1f} milliseconds\n:satellite: Processing {:,.0f} messages per minute\n:signal_strength: Discord: {}".format(self.fusion.averagePing * 1000, self.fusion.averageMessages, "all systems operational" if isDiscordWorking else "degraded performance"), color=constants.colors["deep purple" if isDiscordWorking else "gray"]))
+							except Exception as e: await self.unknown_error(message, authorId, e)
+						elif response == "vote":
+							try: await message.channel.send(embed=discord.Embed(title="https://top.gg/bot/401328409499664394/vote", color=constants.colors["pink"]))
+							except Exception as e: await self.unknown_error(message, authorId, e)
+					elif response is not None:
+						try: await message.channel.send(content=response)
+						except: pass
 				elif raw.startswith(("alert ", "alerts ")):
+					self.fusion.process_active_user(authorId, "alerts")
 					if message.author.bot:
-						if not await self.bot_verification(message, raw, mute=True): return
+						if not await self.bot_verification(message, authorId, raw, mute=True, override=True): return
 
 					if raw in ["alert help", "alerts help"]:
-						helpCommandParts = [
-							"__**Syntax:**__",
-							"Adding price alerts ```alert set <coin> <price>```",
-							"Listing all set alerts ```alert list```",
-							"List all your price alerts ```alert list```",
-							"__**Examples:**__",
-							"`alert set btc 90000` set alert for BTC/USDT on Binance when price hits $90,000",
-							"`alert set xbt 1000` set alert for XBT/USD on BitMEX when price hits $1000",
-							"`alert set ada 0.00000700` set alert for ADA/BTC on Binance when price hits 0.00000700 BTC"
-							"__**Notes:**__",
-							"Alerts only support Binance and BitMEX at this moment. More exchanges coming soon"
-						]
-						try: await message.channel.send("\n".join(helpCommandParts))
-						except: await self.unknown_error(message)
+						embed = discord.Embed(title=":bell: Alerts", description="Price alerts allow you to make sure you don't miss a single move in the market. Alpha will notify you of a price move right through Discord, so you don't have to move between platforms.", color=constants.colors["light blue"])
+						embed.add_field(name=":pencil2: Adding price alerts", value="```alert set <coin> <exchange> <price>```", inline=False)
+						embed.add_field(name=":page_with_curl: Listing all your currently set alerts", value="```alert list```Alerts can be deleted by clicking the delete button below each alert.", inline=False)
+						embed.add_field(name=":books: Examples", value="● `alert set btc bitmex 90000` sets a price alert for XBTUSD on BitMEX at 90,000 USD\n● `alert set ethbtc 0.025` sets a price alert for ETH on Binance at 0.025 BTC.", inline=False)
+						embed.add_field(name=":notepad_spiral: Notes", value="Price alerts are currently only supported on Binance and BitMEX. Support for more exchanges is coming soon.", inline=False)
+						embed.set_footer(text="Use \"alert help\" to pull up this list again.")
+						try: await message.channel.send(embed=embed)
+						except Exception as e: await self.unknown_error(message, authorId, e)
 					else:
 						if isPremium:
+							await self.support_message(message, authorId, raw, "alerts")
 							slices = re.split(", alert | alert |, alerts | alerts |, ", raw.split(" ", 1)[1])
 							if len(slices) > 5:
-								await self.hold_up(message, isPremium)
+								await self.hold_up(message, authorId, isPremium)
 								return
 							for slice in slices:
-								await self.alert(message, slice, useMute)
+								await self.alert(message, authorId, slice, useMute)
+								self.statistics["alerts"] += 1
 						else:
-							try: await message.channel.send("Price alerts are available for premium members only.\n\n{}".format(constants.premiumMessage))
-							except: pass
+							try: await message.channel.send(content="Price alerts are available for premium members only. {}".format("Join our server to learn more: https://discord.gg/H9sS6WK" if message.guild.id != 414498292655980583 else "Check <#509428086979297320> or <#560475744258490369> to learn more."))
+							except Exception as e: await self.unknown_error(message, authorId, e)
 				elif raw.startswith("preset "):
 					if message.author.bot:
-						if not await self.bot_verification(message, raw, mute=True): return
+						if not await self.bot_verification(message, authorId, raw, mute=True, override=True): return
 
 					if raw in ["preset help"]:
-						helpCommandParts = [
-							"__**Syntax:**__",
-							"Add a preset invoked by typing `<name>` ```preset add <name> <command>```",
-							"List all presets ```preset list```",
-							"__**Examples:**__",
-							"`preset set btc15 c btc bfx 4h rsi srsi macd` get 4h Binance chart with RSI, SRSI, & MACD indicators when you type *btc15* in the chat",
-							"__**Notes:**__",
-							"Preset names have to be made out of a single word. They can then be used as commands on their own eg. `btc15` or within commands themselves eg. `c btc bfx myindicators`"
-						]
-						try: await message.channel.send("\n".join(helpCommandParts))
-						except: await self.unknown_error(message)
+						embed = discord.Embed(title=":pushpin: Command presets", description="With command presets you're able to make multiple requests at once, save your chart layouts or pull prices of your hodl porfolio.", color=constants.colors["light blue"])
+						embed.add_field(name=":pencil2: Adding presets", value="```preset add <name> <command>```A preset can be called by typing its name in the chat.", inline=False)
+						embed.add_field(name=":page_with_curl: Listing all your presets", value="```preset list```Presets can be deleted by clicking the delete button below each preset.", inline=False)
+						embed.add_field(name=":books: Examples", value="● `preset add btc4h c xbt 4h rsi macd, eth mex 4h rsi macd` creates a preset named `btc4h`. Calling it will produce 4h XBTUSD and ETHUSD BitMEX chart with RSI and MACD indicators.\n● `preset add bitcoin btc, xbt, btc bfx` creates a preset named `bitcoin`. Calling it will produce BTCUSD charts from Binance, BitMEX and Bitfinex respectively.", inline=False)
+						embed.add_field(name=":notepad_spiral: Notes", value="Preset names must consist of a single phrase. Only up to 5 requests are allowed per preset.", inline=False)
+						embed.set_footer(text="Use \"preset help\" to pull up this list again.")
+						try: await message.channel.send(embed=embed)
+						except Exception as e: await self.unknown_error(message, authorId, e)
 					else:
 						if isPremium:
+							await self.support_message(message, authorId, raw, "preset")
 							slices = re.split(", preset | preset", raw.split(" ", 1)[1])
 							if len(slices) > 5:
-								await self.hold_up(message, isPremium)
+								await self.hold_up(message, authorId, isPremium)
 								return
 							for slice in slices:
-								await self.presets(message, slice, guildId, useMute)
+								await self.presets(message, authorId, slice, guildId, useMute)
 						else:
-							try: await message.channel.send("Presets are available for premium members only.\n\n{}".format(constants.premiumMessage))
-							except: pass
+							try: await message.channel.send(content="Presets are available for premium members only. {}".format("Join our server to learn more: https://discord.gg/H9sS6WK" if message.guild.id != 414498292655980583 else "Check <#509428086979297320> or <#560475744258490369> to learn more."))
+							except Exception as e: await self.unknown_error(message, authorId, e)
 				elif raw.startswith("c "):
+					self.fusion.process_active_user(authorId, "c")
 					if message.author.bot:
-						if not await self.bot_verification(message, raw): return
+						if not await self.bot_verification(message, authorId, raw): return
 
 					if raw in ["c help"]:
-						helpCommandParts = [
-							"__**Syntax:**__",
-							"```c <coin> <exchange> <timeframe(s)> <candle type> <indicators>```",
-							"__**Examples:**__",
-							"`c btc` Binance BTC chart",
-							"`c xbt log` BitMEX BTC log chart",
-							"`c $coin link` get coin/USD(T) chart with links to interactive graphs",
-							"`c btc 15m 1d 1w white` 15m, 1d, 1w Binance white theme charts",
-							"`c btc bfx 4h rsi srsi macd` 4h Binance chart with RSI, SRSI, & MACD indicators",
-							"`c xbt 1h-1w bb ic rsi` 1h, 4h, 1w BitMEX charts for XBT (perpetual BTC) with BB, IC, RSI indicators",
-							"`c ada b 1-1h rsi srsi obv` 1m, 3m, 5m, 15m, 30m, 1h Binance charts for ADA/BTC with RSI, SRSI, OBV indicators",
-							"`c $bnb bi 15m-1h bb ic mfi` 15m, 30m, & 1h Binance charts for BNB/USDT with BB, IC, and MFI indicators",
-							"`c bnbusd b 15m-1h bb ic mfi` 15m, 30m, & 1h Binance charts for BNB/USDT",
-							"`c etcusd btrx 1w-4h bb ic mfi` 1w, 1 day, & 4 hour Bittrex charts for ETC/USD",
-							"`c $ltc cbp 1w-4h bb ic mfi` 1w, 1d, & 4h Coinbase Pro charts for LTC/USD",
-							"Use `c <coin> shorts` or `c <coin> s` for shorts chart and `c <coin> longs` or `c <coin> l` for longs chart",
-							"__**Notes:**__",
-							"Type `c parameters` for the complete indicator & timeframes list"
-						]
-						try: await message.channel.send("\n".join(helpCommandParts))
-						except: await self.unknown_error(message)
-					elif raw in ["c parameters", "c indicators", "c timeframes", "c exchanges"]:
+						embed = discord.Embed(title=":chart_with_upwards_trend: Charts", description="Pull TradingView charts effortlessly with only a few keystrokes right in Discord.", color=constants.colors["light blue"])
+						embed.add_field(name=":pencil2: Syntax", value="```c <coin> <exchange> <timeframe(s)> <candle type> <indicators>```", inline=False)
+						embed.add_field(name=":books: Examples", value="● `c btc` produces 1h BTCUSDT chart from Binance.\n● `c xbt log` produces 1h XBTUSD log chart from BitMEX.\n● `c ada 1-1h rsi srsi` produces 1m, 3m, 5m, 15m, 30m and 1h ADABTC charts from Binance with RSI, and Stoch RSI indicators.\n● `c $bnb 15m-1h bb mfi` produces 15m, 30m, & 1h BNBUSDT charts from Binance with Bollinger Bands, and MFI indicators.\n● `c etcusd btrx 1w-4h` 1w, 1d and 4h ETCUSD charts from Bittrex.", inline=False)
+						embed.add_field(name=":notepad_spiral: Notes", value="Type `c parameters` for the complete indicator & timeframes list.", inline=False)
+						embed.set_footer(text="Use \"c help\" to pull up this list again.")
+						try: await message.channel.send(embed=embed)
+						except Exception as e: await self.unknown_error(message, authorId, e)
+					elif raw in ["c parameters"]:
 						availableIndicators = [
-							"**NV** (no volume indicator)", "**ACCD** (Accumulation/Distribution)", "**ADR**", "**Aroon**", "**ATR** (Average True Range)", "**Awesome** (Awesome Oscillator)",
-							"**BB** (Bollinger Bands)", "**BBW** (Bollinger Bands Width)", "**CMF** (Chaikin Money Flow)", "**Chaikin** (Chaikin Oscillator)", "**Chande** (Chande Momentum Oscillator)",
-							"**CI** (Choppiness Index)", "**CCI** (Commodity Channel Index)", "**CRSI** (ConnorsRSI)", "**CC** (Correlation Coefficient)", "**DPO** (Detrended Price Oscillator)",
-							"**DM** (Directional Movement)", "**DONCH** (Donchian Channels)", "**DEMA** (Double EMA)", "**EOM** (Ease Of Movement)", "**EFI** (Elder's Force Index)",
-							"**EW** (Elliott Wave)", "**ENV** (Envelope)", "**Fisher** (Fisher Transform)", "**HV** (Historical Volatility)", "**HMA** (Hull Moving Average)",
-							"**Ichimoku** (Ichimoku Cloud)", "**Keltner** (Keltner Channels)", "**KST** (Know Sure Thing)", "**LR** (Linear Regression)", "**MACD**", "**MOM** (Momentum)",
-							"**MFI** (Money Flow Index)", "**Moon** (Moon Phases)", "**MA** (Moving Average)", "**EMA** (Moving Average Exponentional)", "**WMA** (Moving Average Weighted)",
-							"**OBV** (On Balance Volume)", "**PSAR** (Parabolic SAR)", "**PPHL** (Pivot Points High Low)", "**PPS** (Pivot Points Standard)", "**PO** (Price Oscillator)",
-							"**PVT** (Price Volume Trend)", "**ROC** (Rate Of Change)", "**RSI** (Relative Strength Index)", "**VI** (Relative Vigor Index)", "**RVI** (Relative Volatility Index)",
-							"**SMIEI** (SMI Ergodic Indicator)", "**SMIEO** (SMI Ergodic Oscillator)", "**Stoch** (Stochastic)", "**SRSI** (Stochastic RSI)", "**TEMA** (Triple EMA)", "**TRIX**",
-							"**Ultimate** (Ultimate Oscillator)", "**VSTOP** (Volatility Stop)", "**VWAP**", "**VWMA** (Volume Weighted Moving Average)", "**WilliamsR** (Williams %R)", "**WilliamsA** (Williams Alligator)",
-							"**WF** (Williams Fractal)", "**ZZ** (Zig Zag)"
+							"NV *(no volume)*", "ACCD *(Accumulation/Distribution)*", "ADR", "Aroon", "ATR", "Awesome *(Awesome Oscillator)*", "BB", "BBW", "CMF", "Chaikin *(Chaikin Oscillator)*", "Chande *(Chande Momentum Oscillator)*", "CI *(Choppiness Index)*", "CCI", "CRSI", "CC *(Correlation Coefficient)*", "DPO", "DM", "DONCH *(Donchian Channels)*", "DEMA", "EOM", "EFI", "EW *(Elliott Wave)*", "ENV *(Envelope)*", "Fisher *(Fisher Transform)*", "HV *(Historical Volatility)*", "HMA", "Ichimoku", "Keltner *(Keltner Channels)*", "KST", "LR *(Linear Regression)*", "MACD", "MOM", "MFI", "Moon *(Moon Phases)*", "MA", "EMA", "WMA", "OBV", "PSAR", "PPHL *(Pivot Points High Low)*", "PPS *(Pivot Points Standard)*", "PO *(Price Oscillator)*", "PVT", "ROC", "RSI", "RVI *(Relative Vigor Index)*", "VI (volatility index)", "SMIEI *(SMI Ergodic Indicator)*", "SMIEO *(SMI Ergodic Oscillator)*", "Stoch", "SRSI *(Stochastic RSI)*", "TEMA *(Triple EMA)*", "TRIX", "Ultimate *(Ultimate Oscillator)*", "VSTOP *(Volatility Stop)*", "VWAP", "VWMA", "WilliamsR", "WilliamsA *(Williams Alligator)*", "WF *(Williams Fractal)*", "ZZ *(Zig Zag)*"
 						]
-						try:
-							await message.channel.send("Indicators: {}".format(", ".join(availableIndicators)))
-							await message.channel.send("Timeframes: **1/3/5/15/30-minute**, **1/2/3/4-hour**, **daily** and **weekly**")
-							await message.channel.send("Exchanges: Binance, Coinbase Pro, Bittrex, Poloniex, Kraken, BitMEX, Bitfinex, Bitflyer, OKCoin, Bithumb, Bitso, Bitstamp, BTCChina, Cobinhood, Coinfloor, Foxbit, Gemini, HitBTC, Huobi Pro, itBit, Mercado")
-							await message.channel.send("Candle types: bars, candles, heikin ashi, line break, line, area, renko, kagi, point&figure")
-							await message.channel.send("Additional parameters: log, white, link")
-						except: await self.unknown_error(message)
+						embed = discord.Embed(title=":chains: Chart parameters", description="All available chart parameters you can use", color=constants.colors["light blue"])
+						embed.add_field(name=":bar_chart: Indicators", value="{}".format(", ".join(availableIndicators)), inline=False)
+						embed.add_field(name=":control_knobs: Timeframes", value="1/3/5/15/30-minute, 1/2/3/4-hour, daily, weekly and monthly", inline=False)
+						embed.add_field(name=":scales: Exchanges", value=", ".join([(self.coinParser.exchanges[e].name if e in self.coinParser.exchanges else e.title()) for e in constants.supportedExchanges["charts"]]), inline=False)
+						embed.add_field(name=":chart_with_downwards_trend: Candle types", value="Bars, Candles, Heikin Ashi, Line Break, Line, Area, Renko, Kagi, Point&Figure", inline=False)
+						embed.add_field(name=":gear: Other parameters", value="Shorts, Longs, Log, White, Link", inline=False)
+						embed.set_footer(text="Use \"c parameters\" to pull up this list again.")
+						try: await message.channel.send(embed=embed)
+						except Exception as e: await self.unknown_error(message, authorId, e)
 					else:
+						await self.support_message(message, authorId, raw, "c")
 						slices = re.split(", c | c |, ", raw.split(" ", 1)[1])
 						totalWeight = len(slices)
 						if totalWeight > 5:
-							await self.hold_up(message, isPremium)
+							await self.hold_up(message, authorId, isPremium)
 							return
 						for slice in slices:
-							if message.author.id in self.rateLimited["u"]: self.rateLimited["u"][message.author.id] += 2
-							else: self.rateLimited["u"][message.author.id] = 2
+							if authorId in self.rateLimited["u"]: self.rateLimited["u"][authorId] += 2
+							else: self.rateLimited["u"][authorId] = 2
 
-							if self.rateLimited["u"][message.author.id] >= limit:
-								try: await message.channel.send("<@!{}>, you reached a limit of **{} requests per minute**".format(message.author.id, limit))
-								except: pass
-								self.rateLimited["u"][message.author.id] = limit
+							if self.rateLimited["u"][authorId] >= limit:
+								try: await message.channel.send(content="<@!{}>".format(authorId), embed=discord.Embed(title="You reached your limit of requests per minute. You can try again in a minute.", color=constants.colors["gray"]))
+								except Exception as e: await self.unknown_error(message, authorId, e)
+								self.rateLimited["u"][authorId] = limit
 								totalWeight = limit
 								break
 							else:
-								await self.support_message(message, raw, isPremium)
 								if slice in ["greed index", "gi", "fear index", "fi", "fear greed index", "fgi", "greed fear index", "gfi"]:
-									chartMessages, weight = await self.fear_greed_index(message, slice, useMute)
-								elif slice in ["nvt", "nvt signal"]:
-									chartMessages, weight = await self.nvt_signal(message, slice, useMute)
+									chartMessages, weight = await self.fear_greed_index(message, authorId, slice, useMute)
+								elif slice in ["nvtr", "nvt", "nvt ratio"]:
+									chartMessages, weight = await self.woobull_chart(message, authorId, slice, "NVT", useMute)
+								elif slice in ["drbns", "drbn", "rbns", "rbn", "difficulty ribbon"]:
+									chartMessages, weight = await self.woobull_chart(message, authorId, slice, "Difficulty Ribbons", useMute)
+								elif slice.startswith("tv "):
+									chartMessages, weight = await self.tradingview_chart(message, authorId, slice[3:], useMute)
+								elif slice.startswith("fv "):
+									chartMessages, weight = await self.finviz_chart(message, authorId, slice[3: ], useMute)
 								else:
-									chartMessages, weight = await self.chart(message, slice, useMute)
+									chartMessages, weight = await self.tradingview_chart(message, authorId, slice, useMute, canForward=False) # True
 
 								sentMessages += chartMessages
 								totalWeight += weight - 1
 
-								if message.author.id in self.rateLimited["u"]: self.rateLimited["u"][message.author.id] += weight - 2
-								else: self.rateLimited["u"][message.author.id] = weight - 2
+								if authorId in self.rateLimited["u"]: self.rateLimited["u"][authorId] += weight - 2
+								else: self.rateLimited["u"][authorId] = weight - 2
 
 						self.statistics["c"] += totalWeight
-						await self.finish_request(message, raw, totalWeight, sentMessages)
+						await self.finish_request(message, authorId, raw, totalWeight, sentMessages)
 				elif raw.startswith("p "):
+					self.fusion.process_active_user(authorId, "p")
 					if message.author.bot:
-						if not await self.bot_verification(message, raw): return
+						if not await self.bot_verification(message, authorId, raw): return
 
 					if raw in ["p help"]:
-						helpCommandParts = [
-							"__**Syntax:**__",
-							"```p <coin> <exchange>```",
-							"__**Examples:**__",
-							"`p btc` Binance BTC price",
-							"`p xbt` BitMEX BTC price",
-							"`p $coin` get coin/USD(T) price",
-							"`p ada` ADA/BTC price on Binance",
-							"`p $xvg bfx` XVG/USDT price on Binance",
-							"`p etcusd btrx` ETC/USD price on Bittrex"
-						]
-						try: await message.channel.send("\n".join(helpCommandParts))
-						except: await self.unknown_error(message)
+						embed = discord.Embed(title=":money_with_wings: Prices", description="Market prices fro thousands of crypto tickers are available with a single command through Alpha on Discord.", color=constants.colors["light blue"])
+						embed.add_field(name=":pencil2: Syntax", value="```p <coin> <exchange>```", inline=False)
+						embed.add_field(name=":books: Examples", value="● `p btc` will request BTCUSD price from CoinGecko.\n● `p ada bin` will request ADABTC price on Binance.\n● `p $bnb` will request BNBUSD price from CoinGecko.\n● `p etcusd btrx` will request ETCUSD price on Bittrex.", inline=False)
+						try: await message.channel.send(embed=embed)
+						except Exception as e: await self.unknown_error(message, authorId, e)
 					elif raw not in ["p "]:
+						await self.support_message(message, authorId, raw, "p")
 						slices = re.split(", p | p |, ", raw.split(" ", 1)[1])
 						if len(slices) > 5:
-							await self.hold_up(message, isPremium)
+							await self.hold_up(message, authorId, isPremium)
 							return
 						for slice in slices:
-							if message.author.id in self.rateLimited["u"]: self.rateLimited["u"][message.author.id] += 1
-							else: self.rateLimited["u"][message.author.id] = 1
+							if authorId in self.rateLimited["u"]: self.rateLimited["u"][authorId] += 1
+							else: self.rateLimited["u"][authorId] = 1
 
-							if self.rateLimited["u"][message.author.id] >= limit:
-								try: await message.channel.send("<@!{}>, you reached a limit of **{} price requests per minute**".format(message.author.id, limit))
-								except: pass
-								self.rateLimited["u"][message.author.id] = limit
+							if self.rateLimited["u"][authorId] >= limit:
+								try: await message.channel.send(content="<@!{}>".format(authorId), embed=discord.Embed(title="You reached your limit of requests per minute. You can try again in a minute.", color=constants.colors["gray"]))
+								except Exception as e: await self.unknown_error(message, authorId, e)
+								self.rateLimited["u"][authorId] = limit
 								totalWeight = limit
 								break
 							else:
-								await self.support_message(message, raw, isPremium)
-								if slice in ["greed index", "gi"]:
-									try:
-										r = requests.get("https://api.alternative.me/fng/?limit=1&format=json").json()
-										greedIndex = r["data"][0]["value"]
-										greedClassification = r["data"][0]["value_classification"]
-										try: await message.channel.send("Current greed index is **{}** ({})".format(greedIndex, greedClassification))
-										except: pass
-									except:
-										await self.unknown_error(message)
-								else:
-									await self.price(message, slice, isPremium, useMute)
+								await self.price(message, authorId, slice, isPremium, useMute)
 
 						self.statistics["p"] += len(slices)
-						await self.finish_request(message, raw, len(slices), [])
-				elif raw.startswith("d "):
-					if message.author.bot:
-						if not await self.bot_verification(message, raw): return
-
-					if raw in ["d help"]:
-						helpCommandParts = [
-							"__**Syntax:**__",
-							"```d <coin> <exchange>```",
-							"__**Examples:**__",
-							"`d btc` Binance BTC orders",
-							"`d xbt` BitMEX BTC orders",
-							"`d $coin` get coin/USD(T) orders",
-							"`d ada` ADA/BTC orders on Binance",
-							"`d $xvg bfx` XVG/USDT orders on Binance",
-							"`d etcusd btrx` ETC/USD orders on Bittrex"
-						]
-						try: await message.channel.send("\n".join(helpCommandParts))
-						except: await self.unknown_error(message)
-					elif raw not in ["d "]:
-						slices = re.split(", d | d |, ", raw.split(" ", 1)[1])
-						if len(slices) > 5:
-							await self.hold_up(message, isPremium)
-							return
-						for slice in slices:
-							if message.author.id in self.rateLimited["u"]: self.rateLimited["u"][message.author.id] += 1
-							else: self.rateLimited["u"][message.author.id] = 1
-
-							if self.rateLimited["u"][message.author.id] >= limit:
-								try: await message.channel.send("<@!{}>, you reached a limit of **{} depth data requests per minute**".format(message.author.id, limit))
-								except: pass
-								self.rateLimited["u"][message.author.id] = limit
-								totalWeight = limit
-								break
-							else:
-								await self.support_message(message, raw, isPremium)
-								await self.depth(message, slice, useMute)
-
-						self.statistics["d"] += len(slices)
-						await self.finish_request(message, raw, len(slices), [])
+						await self.finish_request(message, authorId, raw, len(slices), [])
 				elif raw.startswith("v "):
+					self.fusion.process_active_user(authorId, "v")
 					if message.author.bot:
-						if not await self.bot_verification(message, raw): return
+						if not await self.bot_verification(message, authorId, raw): return
 
 					if raw in ["v help"]:
-						helpCommandParts = [
-							"__**Syntax:**__",
-							"```v <coin> <exchange>```",
-							"__**Examples:**__",
-							"`v btc` Binance BTC daily volume",
-							"`v xbt` BitMEX BTC daily volume",
-							"`v $coin` get coin/USD(T) daily volume",
-							"`v ada` ADA/BTC daily volume on Binance",
-							"`v $xvg bfx` XVG/USDT daily volume on Binance",
-							"`v etcusd btrx` ETC/USD daily volume on Bittrex"
-						]
-						try: await message.channel.send("\n".join(helpCommandParts))
-						except: await self.unknown_error(message)
+						embed = discord.Embed(title=":credit_card: 24-hour rolling volume", description="Rolling 24-hour volume can be requested for virtually any crypto ticker.", color=constants.colors["light blue"])
+						embed.add_field(name=":pencil2: Syntax", value="```v <coin> <exchange>```", inline=False)
+						embed.add_field(name=":books: Examples", value="● `v btc` will request BTCUSD volume from CoinGecko.\n● `v ada bin` will request ADABTC volume on Binance.\n● `v $bnb` will request BNBUSD volume from CoinGecko.\n● `v etcusd btrx` will request ETCUSD volume on Bittrex.", inline=False)
+						embed.set_footer(text="Use \"v help\" to pull up this list again.")
+						try: await message.channel.send(embed=embed)
+						except Exception as e: await self.unknown_error(message, authorId, e)
 					elif raw not in ["v "]:
+						await self.support_message(message, authorId, raw, "v")
 						slices = re.split(", v | v |, ", raw.split(" ", 1)[1])
 						if len(slices) > 5:
-							await self.hold_up(message, isPremium)
+							await self.hold_up(message, authorId, isPremium)
 							return
 						for slice in slices:
-							if message.author.id in self.rateLimited["u"]: self.rateLimited["u"][message.author.id] += 1
-							else: self.rateLimited["u"][message.author.id] = 1
+							if authorId in self.rateLimited["u"]: self.rateLimited["u"][authorId] += 1
+							else: self.rateLimited["u"][authorId] = 1
 
-							if self.rateLimited["u"][message.author.id] >= limit:
-								try: await message.channel.send("<@!{}>, you reached a limit of **{} volume data requests per minute**".format(message.author.id, limit))
-								except: pass
-								self.rateLimited["u"][message.author.id] = limit
+							if self.rateLimited["u"][authorId] >= limit:
+								try: await message.channel.send(content="<@!{}>".format(authorId), embed=discord.Embed(title="You reached your limit of requests per minute. You can try again in a minute.", color=constants.colors["gray"]))
+								except Exception as e: await self.unknown_error(message, authorId, e)
+								self.rateLimited["u"][authorId] = limit
 								totalWeight = limit
 								break
 							else:
-								await self.support_message(message, raw, isPremium)
-								await self.volume(message, slice, useMute)
+								await self.volume(message, authorId, slice, useMute)
 
 						self.statistics["v"] += len(slices)
-						await self.finish_request(message, raw, len(slices), [])
-				elif raw.startswith("hmap "):
+						await self.finish_request(message, authorId, raw, len(slices), [])
+				elif raw.startswith("d "):
+					self.fusion.process_active_user(authorId, "d")
 					if message.author.bot:
-						if not await self.bot_verification(message, raw): return
+						if not await self.bot_verification(message, authorId, raw): return
+
+					if raw in ["d help"]:
+						embed = discord.Embed(title=":book: Orderbook graphs", description="Orderbook snapshot graphs are available right through Alpha, saving you time having to log onto an exchange.", color=constants.colors["light blue"])
+						embed.add_field(name=":pencil2: Syntax", value="```d <coin> <exchange>```", inline=False)
+						embed.add_field(name=":books: Examples", value="● `d btc` will request BTCUSDT orderbook snapshot on Binance.\n● `d ada` will request ADABTC orderbook snapshot on Binance.\n● `d $bnb` will request BNBUSDT orderbook snapshot on Binance.\n● `d etcusd btrx` will request ETCUSD orderbook snapshot from Bittrex.", inline=False)
+						embed.set_footer(text="Use \"d help\" to pull up this list again.")
+						try: await message.channel.send(embed=embed)
+						except Exception as e: await self.unknown_error(message, authorId, e)
+					elif raw not in ["d "]:
+						await self.support_message(message, authorId, raw, "d")
+						slices = re.split(", d | d |, ", raw.split(" ", 1)[1])
+						totalWeight = len(slices)
+						if len(slices) > 5:
+							await self.hold_up(message, authorId, isPremium)
+							return
+						for slice in slices:
+							if authorId in self.rateLimited["u"]: self.rateLimited["u"][authorId] += 2
+							else: self.rateLimited["u"][authorId] = 2
+
+							if self.rateLimited["u"][authorId] >= limit:
+								try: await message.channel.send(content="<@!{}>".format(authorId), embed=discord.Embed(title="You reached your limit of requests per minute. You can try again in a minute.", color=constants.colors["gray"]))
+								except Exception as e: await self.unknown_error(message, authorId, e)
+								self.rateLimited["u"][authorId] = limit
+								totalWeight = limit
+								break
+							else:
+								chartMessages, weight = await self.depth(message, authorId, slice, useMute)
+								sentMessages += chartMessages
+								totalWeight += weight - 1
+
+								if authorId in self.rateLimited["u"]: self.rateLimited["u"][authorId] += weight - 2
+								else: self.rateLimited["u"][authorId] = weight - 2
+
+						self.statistics["d"] += totalWeight
+						await self.finish_request(message, authorId, raw, totalWeight, sentMessages)
+				elif raw.startswith("hmap "):
+					self.fusion.process_active_user(authorId, "hmap")
+					if message.author.bot:
+						if not await self.bot_verification(message, authorId, raw): return
 
 					if raw in ["hmap help"]:
-						helpCommandParts = [
-							"__**Syntax:**__",
-							"```hmap <type> <filters> <period>```",
-							"__**Examples:**__",
-							"`hmap price` cryptocurrency market heat map, color represent price change for the day, size represents market cap",
-							"`hmap price top100` cryptocurrency market heat map for top 100 coins",
-							"`hmap price tokens year` cryptocurrency market heat map for tokens in the last year only",
-							"`hmap exchanges` exchanges map, color represent total trade volume change for the day, size represent trade volume",
-							"`hmap trend loosers` unlike general market heat map in this report show only gainers or only loosers",
-							"`hmap category ai` in this map you can see the coins in the Data Storage/Analytics & AI category.",
-							"`hmap vol top10` heat map show top 10 coins by marketcap and their respected volatility",
-							"`hmap unusual` map shows coins, the trade volume of which has grown the most in last day. Bitgur compares last 24h volume and average daily volume for the last week.",
-							"__**Notes:**__",
-							"Type `hmap parameters` for the complete filter & timeframes list"
-						]
-						try: await message.channel.send("\n".join(helpCommandParts))
-						except: await self.unknown_error(message)
+						embed = discord.Embed(title=":fire: Heat maps", description="Pull various Bitgur heat maps right through Alpha on Discord. Market state information has never been so easily accessible before.", color=constants.colors["light blue"])
+						embed.add_field(name=":pencil2: Syntax", value="```hmap <type> <filters> <period>```", inline=False)
+						embed.add_field(name=":books: Examples", value="● `hmap price` produces a cryptocurrency market heat map.\n● `hmap price tokens year` produces a cryptocurrency market heat map for tokens in the last year only.\n● `hmap exchanges` produces an exchange heat map.\n● `hmap category ai` produces a heat map of coins in the Data Storage/Analytics & AI category.\n● `hmap vol top10` produces a heat map showing top 10 coins by marketcap and their respected volatility.\n● `hmap unusual` produces a heat map showing coins, of which the trading volume has grown the most in last day.", inline=False)
+						embed.add_field(name=":notepad_spiral: Notes", value="Type `hmap parameters` for the complete filter & timeframes list.", inline=False)
+						embed.set_footer(text="Use \"hmap help\" to pull up this list again.")
+						try: await message.channel.send(embed=embed)
+						except Exception as e: await self.unknown_error(message, authorId, e)
 					elif raw in ["hmap parameters"]:
 						availableCategories = [
-							"**crypto** (Cryptocurrency)", "**blockchain** (Blockchain Platforms)", "**commerce** (Commerce & Advertising)", "**commodities** (Commodities)",
-							"**content** (Content Management)", "**ai** (Data Storage/Analytics & AI)", "**healthcare** (Drugs & Healthcare)", "**energy** (Energy & Utilities)",
-							"**events** (Events & Entertainment)", "**financial** (Financial Services)", "**gambling** (Gambling & Betting)", "**gaming** (Gaming & VR)",
-							"**identy** (Identy & Reputation)", "**legal** (Legal)", "**estate** (Real Estate)", "**social** (Social Network)", "**software** (Software)",
-							"**logistics** (Supply & Logistics)", "**trading** (Trading & Investing)",
+							"crypto (Cryptocurrency)", "blockchain (Blockchain Platforms)", "commerce (Commerce & Advertising)", "commodities (Commodities)", "content (Content Management)", "ai (Data Storage/Analytics & AI)", "healthcare (Drugs & Healthcare)", "energy (Energy & Utilities)", "events (Events & Entertainment)", "financial (Financial Services)", "gambling (Gambling & Betting)", "gaming (Gaming & VR)", "identy (Identy & Reputation)", "legal (Legal)", "estate (Real Estate)", "social (Social Network)", "software (Software)", "logistics (Supply & Logistics)", "trading (Trading & Investing)",
 						]
-						try:
-							await message.channel.send("Timeframes: **15-minute**, **1-hour**, **daily** and **weekly**, **1/3/6-month**, **1-year**")
-							await message.channel.send("Filters: **10** (top 10), **100** (top 100), **tokens**, **coins**, **gainers**, **loosers**")
-							await message.channel.send("Categories: {}".format(", ".join(availableCategories)))
-						except: await self.unknown_error(message)
+						embed = discord.Embed(title=":chains: Heat map parameters", description="All available heat map parameters you can use", color=constants.colors["light blue"])
+						embed.add_field(name=":control_knobs: Timeframes", value="15-minute, 1-hour, daily, weekly, 1/3/6-month and 1-year", inline=False)
+						embed.add_field(name=":scales: Filters", value="top10, top100, tokens, coins, gainers, loosers", inline=False)
+						embed.add_field(name=":bar_chart: Categories", value="{}".format(", ".join(availableCategories)), inline=False)
+						embed.set_footer(text="Use \"hmap parameters\" to pull up this list again.")
+						try: await message.channel.send(embed=embed)
+						except Exception as e: await self.unknown_error(message, authorId, e)
 					else:
+						await self.support_message(message, authorId, raw, "hmap")
 						slices = re.split(", hmap | hmap |, ", raw)
 						totalWeight = len(slices)
 						if totalWeight > 5:
-							await self.hold_up(message, isPremium)
+							await self.hold_up(message, authorId, isPremium)
 							return
 						for s in slices:
 							slice = s if s.startswith("hmap") else "hmap " + s
-							if message.author.id in self.rateLimited["u"]: self.rateLimited["u"][message.author.id] += 2
-							else: self.rateLimited["u"][message.author.id] = 2
+							if authorId in self.rateLimited["u"]: self.rateLimited["u"][authorId] += 2
+							else: self.rateLimited["u"][authorId] = 2
 
-							if self.rateLimited["u"][message.author.id] >= limit:
-								try: await message.channel.send("<@!{}>, you reached a limit of **{} chart requests per minute**".format(message.author.id, limit))
-								except: pass
-								self.rateLimited["u"][message.author.id] = limit
+							if self.rateLimited["u"][authorId] >= limit:
+								try: await message.channel.send(content="<@!{}>".format(authorId), embed=discord.Embed(title="You reached your limit of requests per minute. You can try again in a minute.", color=constants.colors["gray"]))
+								except Exception as e: await self.unknown_error(message, authorId, e)
+								self.rateLimited["u"][authorId] = limit
 								totalWeight = limit
 								break
 							else:
-								await self.support_message(message, raw, isPremium)
-								chartMessages, weight = await self.heatmap(message, slice, useMute)
+								chartMessages, weight = await self.heatmap(message, authorId, slice, useMute)
 								sentMessages += chartMessages
 								totalWeight += weight - 1
 
-								if message.author.id in self.rateLimited["u"]: self.rateLimited["u"][message.author.id] += 2 - weight
-								else: self.rateLimited["u"][message.author.id] = 2 - weight
+								if authorId in self.rateLimited["u"]: self.rateLimited["u"][authorId] += 2 - weight
+								else: self.rateLimited["u"][authorId] = 2 - weight
 
 						self.statistics["hmap"] += totalWeight
-						await self.finish_request(message, raw, totalWeight, sentMessages)
+						await self.finish_request(message, authorId, raw, totalWeight, sentMessages)
 				elif raw.startswith(("mcap ", "mc ")):
+					self.fusion.process_active_user(authorId, "mcap")
 					if message.author.bot:
-						if not await self.bot_verification(message, raw): return
+						if not await self.bot_verification(message, authorId, raw): return
 
 					if raw in ["mcap help", "mc help"]:
-						helpCommandParts = [
-							"__**Syntax:**__",
-							"```mcap/mc <coin>```",
-							"__**Examples:**__",
-							"`mc btc` get information about Bitcoin/USD from CoinGecko",
-							"`mc ada` get information about Cardano/USD from CoinGecko",
-							"`mc trxbtc` get information about Tron/BTC from CoinGecko",
-							"Note that only top 400 coins converted to USD or BTC are supported"
-						]
-						try: await message.channel.send("\n".join(helpCommandParts))
-						except: await self.unknown_error(message)
+						embed = discord.Embed(title=":tools: Coin details", description="All coin information from CoinGecko you can ask for accessible through a single command.", color=constants.colors["light blue"])
+						embed.add_field(name=":pencil2: Syntax", value="```mcap/mc <coin>```", inline=False)
+						embed.add_field(name=":books: Examples", value="● `mc btc` will pull information about Bitcoin from CoinGecko.\n● `mc ada` will pull information about Cardano from CoinGecko.", inline=False)
+						embed.set_footer(text="Use \"mcap help\" to pull up this list again.")
+						try: await message.channel.send(embed=embed)
+						except Exception as e: await self.unknown_error(message, authorId, e)
 					else:
+						await self.support_message(message, authorId, raw, "mcap")
 						slices = re.split(", mcap | mcap |, mc | mc |, ", raw.split(" ", 1)[1])
 						if len(slices) > 5:
-							await self.hold_up(message, isPremium)
+							await self.hold_up(message, authorId, isPremium)
 							return
 						for slice in slices:
-							if message.author.id in self.rateLimited["u"]: self.rateLimited["u"][message.author.id] += 1
-							else: self.rateLimited["u"][message.author.id] = 1
+							if authorId in self.rateLimited["u"]: self.rateLimited["u"][authorId] += 1
+							else: self.rateLimited["u"][authorId] = 1
 
-							if self.rateLimited["u"][message.author.id] >= limit:
-								try: await message.channel.send("<@!{}>, you reached a limit of **{} market data requests per minute**".format(message.author.id, limit))
-								except: pass
-								self.rateLimited["u"][message.author.id] = limit
+							if self.rateLimited["u"][authorId] >= limit:
+								try: await message.channel.send(content="<@!{}>".format(authorId), embed=discord.Embed(title="You reached your limit of requests per minute. You can try again in a minute.", color=constants.colors["gray"]))
+								except Exception as e: await self.unknown_error(message, authorId, e)
+								self.rateLimited["u"][authorId] = limit
 								totalWeight = limit
 								break
 							else:
-								await self.support_message(message, raw, isPremium)
-								await self.mcap(message, slice, useMute)
+								await self.mcap(message, authorId, slice, useMute)
 
 						self.statistics["mcap"] += len(slices)
-						await self.finish_request(message, raw, len(slices), [])
+						await self.finish_request(message, authorId, raw, len(slices), [])
 				elif raw.startswith("mk "):
+					self.fusion.process_active_user(authorId, "mk")
 					if message.author.bot:
-						if not await self.bot_verification(message, raw): return
+						if not await self.bot_verification(message, authorId, raw): return
 
 					if raw in ["mk help"]:
-						helpCommandParts = [
-							"__**Syntax:**__",
-							"```mk <coin>```",
-							"__**Examples:**__",
-							"`mk btc` get all BTC/USD markets",
-							"`mk trx` get all TRX/BTC markets",
-							"`mk bnbusd` get all BNB/USD(T) markets",
-						]
-						try: await message.channel.send("\n".join(helpCommandParts))
-						except: await self.unknown_error(message)
+						embed = discord.Embed(title=":page_facing_up: Market listings", description="A command for pulling a list of exchanges listing a particular market ticker.", color=constants.colors["light blue"])
+						embed.add_field(name=":pencil2: Syntax", value="```mk <coin>```", inline=False)
+						embed.add_field(name=":books: Examples", value="● `mk btc` will list all exchanges listing BTC/USD market pair.\n● `mk ada` will list all exchanges listing ADA/BTC market pair.", inline=False)
+						embed.set_footer(text="Use \"mk help\" to pull up this list again.")
+						try: await message.channel.send(embed=embed)
+						except Exception as e: await self.unknown_error(message, authorId, e)
 					else:
 						slices = re.split(", mk | mk |, ", raw.split(" ", 1)[1])
 						if len(slices) > 5:
-							await self.hold_up(message, isPremium)
+							await self.hold_up(message, authorId, isPremium)
 							return
 						for slice in slices:
-							if message.author.id in self.rateLimited["u"]: self.rateLimited["u"][message.author.id] += 1
-							else: self.rateLimited["u"][message.author.id] = 1
+							if authorId in self.rateLimited["u"]: self.rateLimited["u"][authorId] += 1
+							else: self.rateLimited["u"][authorId] = 1
 
-							if self.rateLimited["u"][message.author.id] >= limit:
-								try: await message.channel.send("<@!{}>, you reached a limit of **{} coin listing requests per minute**".format(message.author.id, limit))
-								except: pass
-								self.rateLimited["u"][message.author.id] = limit
+							if self.rateLimited["u"][authorId] >= limit:
+								try: await message.channel.send(content="<@!{}>".format(authorId), embed=discord.Embed(title="You reached your limit of requests per minute. You can try again in a minute.", color=constants.colors["gray"]))
+								except Exception as e: await self.unknown_error(message, authorId, e)
+								self.rateLimited["u"][authorId] = limit
 								totalWeight = limit
 								break
 							else:
-								await self.support_message(message, raw, isPremium)
-								await self.markets(message, slice, useMute)
+								await self.support_message(message, authorId, raw, "mk")
+								await self.markets(message, authorId, slice, useMute)
 
 						self.statistics["mk"] += len(slices)
-						await self.finish_request(message, raw, len(slices), [])
-				elif raw.startswith("paper ") and 601524236464553984 in [role.id for role in message.author.roles]:
-					if message.author.bot:
-						if not await self.bot_verification(message, raw): return
-
-					if raw in ["paper help"]:
-						helpCommandParts = [
-							"__**Syntax:**__",
-							"Execute orders ```paper <order type> <coin> <exchange> <amount@price>```",
-							"Check your available balance ```paper balance <exchange> [all]```",
-							"Get trading history ```paper history```",
-							"Check all open orders ```paper orders```",
-							"__**Examples:**__",
-							"`paper buy btc 100%` buy BTC with 100% of available USD at market price",
-							"`paper sell btc 0.01` sell 0.01 BTC at market price",
-							"`paper buy btc 50%@5900` place a limit buy order with 50% of available USD at $5900",
-							"`paper stop btc 100%@10%` place a stop loss to sell entire BTC position 10% below the current price",
-							"`paper trailing stop btc 0.25@5%` place a 5% trailing stop loss to sell 0.25 BTC"
-						]
-						try: await message.channel.send("\n".join(helpCommandParts))
-						except: await self.unknown_error(message)
-					elif raw in ["paper leaderboard"]:
-						await self.fetch_leaderboard(message, raw)
-					elif raw.startswith("paper balance"):
-						await self.fetch_paper_balance(message, raw)
-					elif raw in ["paper history", "paper order history", "paper trade history", "paper history all", "paper order history all", "paper trade history all"]:
-						await self.fetch_paper_orders(message, raw, "history")
-					elif raw in ["paper orders", "paper open orders"]:
-						await self.fetch_paper_orders(message, raw, "open_orders")
-					else:
-						slices = re.split(', paper | paper |, ', raw.split(" ", 1)[1])
-						for slice in slices:
-							await self.process_paper_trade(message, slice)
+						await self.finish_request(message, authorId, raw, len(slices), [])
 			else:
-				self.fusion.calculate_average_ping(message, client.cached_messages)
-				if await self.fusion.invite_warning(message, raw, guildId): return
-				if (self.guildProperties[guildId]["functions"]["assistant"] if guildId in self.guildProperties else True):
-					if await self.funnyReplies(message, raw):
+				self.fusion.calculate_average_ping(message, authorId, client.cached_messages)
+				if await self.fusion.invite_warning(message, authorId, raw, guildId): return
+				if (self.guildProperties[guildId]["settings"]["assistant"] if guildId in self.guildProperties else True):
+					response = self.assistant.funnyReplies(raw)
+					if response is not None:
 						self.statistics["alpha"] += 1
-						return
+						try: message.channel.send(content=response)
+						except: pass
 				if not any(keyword in raw for keyword in constants.mutedMentionWords) and not message.author.bot and any(e in re.findall(r"[\w']+", raw) for e in constants.mentionWords) and guildId not in [414498292655980583, -1]:
 					mentionMessage = "{}/{}: {}".format(message.guild.name, message.channel.name, message.clean_content)
-					t = threading.Thread(target=self.webhook_send, args=("https://discordapp.com/api/webhooks/565908326110724117/G1CcoCN5FueN5psTLLqWgIp1nd4sYbcDhi_aCbN0msEL-0ZT5vgGSFZP8wHIhUT0n5pN", mentionMessage, "{}#{}".format(message.author.name, message.author.discriminator), message.author.avatar_url, False, message.attachments, message.embeds))
-					t.start()
+					threading.Thread(target=self.fusion.webhook_send, args=("https://discordapp.com/api/webhooks/626866735567470626/QkGttlP9zowSyuKZn6SWb_RVejWbpjDk9yjTPYRxkT7ASg7KPCyZpD5GhaBidJQGau43", mentionMessage, "{}#{}".format(message.author.name, message.author.discriminator), message.author.avatar_url, False, message.attachments, message.embeds)).start()
 		except asyncio.CancelledError: pass
 		except Exception as e:
-			await self.unknown_error(message, report=True)
+			await self.unknown_error(message, authorId, e, report=True)
 			self.rateLimited = {"c": {}, "p": {}, "d": {}, "v": {}, "u": {}}
 			for side in constants.supportedExchanges:
 				for id in constants.supportedExchanges[side]:
@@ -1371,20 +1315,15 @@ class Alpha(discord.AutoShardedClient):
 						self.rateLimited["p"][id] = {}
 						self.rateLimited["d"][id] = {}
 						self.rateLimited["v"][id] = {}
-
 			exc_type, exc_obj, exc_tb = sys.exc_info()
 			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
 			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, raw))
 
-	async def unknown_error(self, message, id=None, report=False):
-		try: await message.channel.send("Something went wrong{}".format(". The issue was reported" if report else ""))
+	async def unknown_error(self, message, authorId, e, report=False):
+		embed = discord.Embed(title="Looks like something went wrong.{}".format(" The issue was reported." if report else ""), color=constants.colors["gray"])
+		embed.set_author(name="Something went wrong", icon_url=firebase_storage.icon_bw)
+		try: await message.channel.send(embed=embed)
 		except: pass
-
-	def webhook_send(self, url, content, username="Alpha", avatar_url=None, tts=False, files=None, embeds=None):
-		if content != "": content += "\n"
-		content += "\n".join([file.url for file in files])
-		webhook = discord.Webhook.from_url(url, adapter=discord.RequestsWebhookAdapter())
-		webhook.send(content=content, username=username, avatar_url=avatar_url, tts=tts, embeds=embeds)
 
 	async def on_reaction_add(self, reaction, user):
 		if user.id in [487714342301859854, 401328409499664394]: return
@@ -1403,9 +1342,11 @@ class Alpha(discord.AutoShardedClient):
 					else:
 						try: await reaction.message.delete()
 						except: pass
-				elif reaction.emoji == '❌':
-					if reaction.message.content.startswith("● Price alert"):
-						alertId = reaction.message.content.split(" *(id: ")[1][:-2]
+				elif reaction.emoji == '❌' and reaction.message.embeds[0]:
+					titleText = reaction.message.embeds[0].title
+					footerText = reaction.message.embeds[0].footer.text
+					if " ● (id: " in footerText:
+						alertId = footerText.split(" ● (id: ")[1][:-1]
 
 						for id in constants.supportedExchanges["alerts"]:
 							userAlerts = db.collection(u"alpha/alerts/{}".format(id)).stream()
@@ -1413,30 +1354,32 @@ class Alpha(discord.AutoShardedClient):
 								for alertAuthor in userAlerts:
 									if int(alertAuthor.id) == user.id:
 										deletedAlerts = []
-										allAlerts = alertAuthor.to_dict()
-										for s in allAlerts:
-											for alert in allAlerts[s]:
+										fetchedAlerts = alertAuthor.to_dict()
+										for s in fetchedAlerts:
+											for alert in fetchedAlerts[s]:
 												if alert["id"] == alertId:
 													deletedAlerts.append(alert)
 													break
 
 											if len(deletedAlerts) > 0:
 												for alert in deletedAlerts:
-													allAlerts[s].remove(alert)
+													fetchedAlerts[s].remove(alert)
 												alertsRef = db.document(u"alpha/alerts/{}/{}".format(id, user.id))
 												try:
 													batch = db.batch()
-													batch.set(alertsRef, allAlerts, merge=True)
+													batch.set(alertsRef, fetchedAlerts, merge=True)
 													for i in range(1, self.fusion.numInstances + 1):
 														batch.set(db.document(u'fusion/instance-{}'.format(i)), {"needsUpdate": True}, merge=True)
 													batch.commit()
 												except:
-													await self.unknown_error(message)
-												try: await reaction.message.delete()
+													await self.unknown_error(message, authorId, e)
+
+												embed = discord.Embed(title="Alert deleted", color=constants.colors["gray"])
+												embed.set_footer(text=footerText)
+												try: await reaction.message.edit(embed=embed)
 												except: pass
-												return
-					elif reaction.message.content.endswith("`"):
-						presetName = reaction.message.content.split("● ")[1].split(" `")[0]
+					elif " → `" in titleText and titleText.endswith("`"):
+						presetName = titleText.split("`")[1]
 						isServer = False
 						if "(server-wide)" in presetName:
 							presetName = presetName[:-13]
@@ -1450,19 +1393,21 @@ class Alpha(discord.AutoShardedClient):
 						if isServer: self.guildProperties[reaction.message.guild.id] = copy.deepcopy(fetchedSettings)
 						else: self.userProperties[user.id] = copy.deepcopy(fetchedSettings)
 
-						try: await reaction.message.delete()
+						embed = discord.Embed(title="Preset deleted", color=constants.colors["gray"])
+						embed.set_footer(text=footerText)
+						try: await reaction.message.edit(embed=embed)
 						except: pass
 
-	async def finish_request(self, message, raw, weight, sentMessages):
+	async def finish_request(self, message, authorId, raw, weight, sentMessages):
 		await asyncio.sleep(60)
-		if message.author.id in self.rateLimited["u"]:
-			self.rateLimited["u"][message.author.id] -= weight
-			if self.rateLimited["u"][message.author.id] < 1: self.rateLimited["u"].pop(message.author.id, None)
+		if authorId in self.rateLimited["u"]:
+			self.rateLimited["u"][authorId] -= weight
+			if self.rateLimited["u"][authorId] < 1: self.rateLimited["u"].pop(authorId, None)
 
 		autodeleteEnabled = False
 		if message.guild is not None:
 			if message.guild.id in self.guildProperties:
-				autodeleteEnabled = self.guildProperties[message.guild.id]["functions"]["autodelete"]
+				autodeleteEnabled = self.guildProperties[message.guild.id]["settings"]["autodelete"]
 
 		if autodeleteEnabled:
 			try: await message.delete()
@@ -1474,120 +1419,121 @@ class Alpha(discord.AutoShardedClient):
 				else: await chartMessage.remove_reaction("☑", message.channel.guild.me)
 			except: pass
 
-	async def bot_verification(self, message, raw, mute=False):
-		if message.author.id not in constants.verifiedBots:
-			if not mute and message.guild.id not in [414498292655980583, 592019306221535243]:
-				if message.author.discriminator == "0000":
-					try: await message.channel.send("**{}#{} is an unverified bot.**\nBot user making the request is likely a webhook, which cannot be verified and will not work with Alpha. For more info, join Alpha server: https://discord.gg/GQeDE85".format(message.author.name, message.author.discriminator))
-					except: pass
-				else:
-					try: await message.channel.send("**{}#{} is an unverified bot.**\nTo get it verified, please join Alpha server: https://discord.gg/GQeDE85".format(message.author.name, message.author.discriminator))
-					except: pass
-			return False
-		else:
-			history.info("{} ({}): {}".format(Utils.get_current_date(), message.author.id, raw))
-			return True
-
-	async def help(self, message, raw, shortcutUsed):
-		commands1 = [
-			"TradingView charts with `c`, type `c help` to learn more.",
-			"Setup price alerts for select coins with `alert`.",
-			"Current coin price with `p`, type `p help` to learn more.",
-			"Coin information from CoinGecko with `mc`, type `mc help` to learn more.",
-			"Many other questions; start with `alpha` and continue with your question."
-		]
-		commands2 = [
-			"Create presets with `preset` command, type `preset help` to learn more.",
-			"Cross-server message forwarding with `f` command, type `f help` to learn more. (Coming soon for premium members)",
-			"Depth information of a coin with `d`, type `d help` to learn more.",
-			"24h coin volume with `v`, type `v help` to learn more.",
-			"Check the current market state heat map with `hmap`, type `hmap help` to learn more.",
-			"Request Bitcoin dominance chart with `c btc dom`.",
-			"See what exchanges a coin is on with `mk`, type `mk help` to learn more.",
-			"Request NVT ratio chart from *charts.woobull.com* with `nvt`.",
-			"Request greed index chart with `c gi` or `p gi`."
-		]
-		commands3 = [
-			"`a autodelete enable` and `a autodelete disable` to enable/disable automatic chart deletion after one minute.",
-			"`a shortcuts disable` and `a shortcuts enable` to disable/enable price request shortcuts like `mex`.",
-			"`a assistant disable` and `a assistant enable` to disable/enable Google Assistant integration."
-		]
-		try:
-			if shortcutUsed:
-				await message.author.send("__**Here are some things you can ask for:**__\n● {}".format("\n● ".join(commands1)))
-				await message.author.send("__**Other useful commands:**__\n● {}".format("\n● ".join(commands2)))
-				await message.author.send("__**For bot configuration (admins only):**__\n● {}".format("\n● ".join(commands3)))
-			else:
-				await message.channel.send("__**Here are some things you can ask for:**__\n● {}".format("\n● ".join(commands1)))
-				await message.channel.send("__**Other useful commands:**__\n● {}".format("\n● ".join(commands2)))
-				await message.channel.send("__**For bot configuration (admins only):**__\n● {}".format("\n● ".join(commands3)))
-		except:
-			try:
-				await message.channel.send("__**Here are some things you can ask for:**__\n● {}".format("\n● ".join(commands1)))
-				await message.channel.send("__**Other useful commands:**__\n● {}".format("\n● ".join(commands2)))
-				await message.channel.send("__**For bot configuration (admins only):**__\n● {}".format("\n● ".join(commands3)))
-			except:
-				await self.unknown_error(message)
-
-	async def support_message(self, message, raw, isPremium):
-		if isPremium: return
-		if random.randint(0, 250) == 1:
-			try: await message.channel.send(constants.premiumMessage)
+	def clear_rate_limit_cache(self, exchange, tickerId, commands, waitTime):
+		time.sleep(waitTime)
+		for command in commands:
+			try: self.rateLimited[command][exchange].pop(tickerId, None)
 			except: pass
 
-	async def hold_up(self, message, isPremium):
-		if isPremium:
-			try: await message.channel.send("You are requesting a lot of things at once. Having Alpha Premium does not mean you should spam, <@!{}>".format(message.author.id))
-			except: self.unknown_error(message)
+	async def bot_verification(self, message, authorId, raw, mute=False, override=False):
+		if override: return False
+		if message.webhook_id is not None:
+			if message.webhook_id not in constants.verifiedWebhooks:
+				if not mute and message.guild.id != 414498292655980583:
+					embed = discord.Embed(title="{} webhook is not verified with Alpha. To get it verified, please join Alpha server: https://discord.gg/GQeDE85".format(message.author.name), color=constants.colors["pink"])
+					embed.set_author(name="Unverified webhook", icon_url=firebase_storage.icon_bw)
+					try: await message.channel.send(embed=embed)
+					except: pass
+				return False
 		else:
-			try: await message.channel.send("You are requesting a lot of things at once. Maybe you should chill a little, <@!{}>".format(message.author.id))
-			except: self.unknown_error(message)
+			if message.author.id not in constants.verifiedBots:
+				if not mute and message.guild.id != 414498292655980583:
+					embed = discord.Embed(title="{}#{} bot is not verified with Alpha. To get it verified, please join Alpha server: https://discord.gg/GQeDE85".format(message.author.name, message.author.discriminator), color=constants.colors["pink"])
+					embed.set_author(name="Unverified bot", icon_url=firebase_storage.icon_bw)
+					try: await message.channel.send(embed=embed)
+					except: pass
+				return False
+		history.info("{} ({}): {}".format(Utils.get_current_date(), authorId, raw))
+		print(authorId)
+		return True
 
-	async def alert(self, message, raw, mute=False):
+	async def help(self, message, authorId, raw, shortcutUsed):
+		embed = discord.Embed(title=":wave: Introduction", description="Alpha bot is the world's most popular Discord bot for requesting charts, set price alerts, and more. Using Alpha is as simple as typing a short command into any Discord channel Alpha has access to.", color=constants.colors["light blue"])
+		embed.add_field(name=":chart_with_upwards_trend: Charts", value="Easy access to TradingView charts.\nType `c help` to learn more.", inline=False)
+		embed.add_field(name=":bell: Alerts", value="Setup price alerts for select crypto exchanges.\nType `alert help` to learn more.", inline=False)
+		embed.add_field(name=":money_with_wings: Prices", value="Current cryptocurrency prices for thousands of tickers.\nType `p help` to learn more.", inline=False)
+		embed.add_field(name=":book: Orderbook graphs", value="Orderbook snapshot charts of crypto market pairs.\nType `d help` to learn more.", inline=False)
+		embed.add_field(name=":credit_card: 24-hour rolling volume", value="Request 24-hour rolling volume for virtually any crypto market pair.\nType `v help` to learn more.", inline=False)
+		embed.add_field(name=":tools: Coin details", value="Detailed coin information from CoinGecko.\nType `mcap help` to learn more.", inline=False)
+		embed.add_field(name=":fire: Heat maps", value="Check various heat maps from Bitgur.\nType `hmap help` to learn more.", inline=False)
+		embed.add_field(name=":pushpin: Command presets", value="Create personal presets for easy access to things you use most.\nType `preset help` to learn more.", inline=False)
+		embed.add_field(name=":crystal_ball: Assistant", value="Pull up Wikipedia articles, calculate math problems and get answers to many other question. Start a message with `alpha` and continue with your question.", inline=False)
+		embed.set_footer(text="Use \"a help\" to pull up this list again.")
 		try:
+			if shortcutUsed:
+				try: await message.author.send(embed=embed)
+				except: await message.channel.send(embed=embed)
+			else:
+				await message.channel.send(embed=embed)
+		except Exception as e: await self.unknown_error(message, authorId, e)
+
+	async def support_message(self, message, authorId, raw, command):
+		if random.randint(0, 50) == 1:
+			c = command
+			while c == command: c, textSet = random.choice(list(constants.supportMessages.items()))
+			embed = discord.Embed(title=random.choice(textSet), color=constants.colors["light blue"])
+			try: await message.channel.send(embed=embed)
+			except: pass
+
+	async def hold_up(self, message, authorId, isPremium):
+		embed = discord.Embed(title="Only up to 5 requests are allowrd per command", color=constants.colors["gray"])
+		embed.set_author(name="Too many requests", icon_url=firebase_storage.icon_bw)
+		try: await message.channel.send(embed=embed)
+		except Exception as e: await self.unknown_error(message, authorId, e)
+
+	async def alert(self, message, authorId, raw, mute=False):
+		try:
+			sentMessages = []
 			arguments = raw.split(" ")
 			method = arguments[0]
 
 			if method in ["set", "create", "add"]:
 				if len(arguments) >= 3:
-					try: await message.channel.trigger_typing()
-					except: pass
-
-					tickerId, exchange, tickerParts, isAggregatedSymbol = self.coinParser.process_ticker(arguments[1].upper(), self.coinParser.coins["alerts"])
+					tickerId, exchange, tickerParts, isAggregatedSymbol, isCryptoTicker = self.coinParser.process_ticker(arguments[1].upper(), "alerts")
 					if isAggregatedSymbol:
-						try: await message.channel.send("Aggregated tickers aren't supported with the **alert** command")
-						except: await self.unknown_error(message)
+						if not mute:
+							embed = discord.Embed(title="Aggregated tickers aren't supported with the `alert` command", color=constants.colors["gray"])
+							embed.set_author(name="Aggregated tickers", icon_url=firebase_storage.icon_bw)
+							try: await message.channel.send(embed=embed)
+							except Exception as e: await self.unknown_error(message, authorId, e)
 						return
 
 					outputMessage, tickerId, arguments = self.alerts.process_alert_arguments(arguments, tickerId, exchange)
 					if outputMessage is not None:
 						if not mute:
-							try: await message.channel.send(outputMessage)
-							except: await self.unknown_error(message)
+							embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
+							embed.set_author(name="Invalid argument", icon_url=firebase_storage.icon_bw)
+							try: await message.channel.send(embed=embed)
+							except Exception as e: await self.unknown_error(message, authorId, e)
 						return
 					exchange, action, level, repeat = arguments
 
-					outputMessage, details = self.coinParser.find_trading_pair_id(tickerId, exchange, "alerts", "fetchOHLCV")
+					outputMessage, details = self.coinParser.find_market_pair(tickerId, exchange, "alerts")
 					if outputMessage is not None:
 						if not mute:
-							try: await message.channel.send(outputMessage)
-							except: await self.unknown_error(message)
+							embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
+							embed.set_author(name="Ticker not found", icon_url=firebase_storage.icon_bw)
+							try: await message.channel.send(embed=embed)
+							except Exception as e: await self.unknown_error(message, authorId, e)
 						return
 
-					symbol, exchange = details
-					base = self.coinParser.exchanges[exchange].markets[symbol]["base"]
-					quote = self.coinParser.exchanges[exchange].markets[symbol]["quote"]
+					symbol, base, quote, marketPair, exchange = details
 
-					alertsRef = db.document(u"alpha/alerts/{}/{}".format(exchange, message.author.id))
-					allAlerts = alertsRef.get().to_dict()
-					if allAlerts is None: allAlerts = {}
+					try: await message.channel.trigger_typing()
+					except: pass
+
+					alertsRef = db.document(u"alpha/alerts/{}/{}".format(exchange, authorId))
+					fetchedAlerts = alertsRef.get().to_dict()
+					if fetchedAlerts is None: fetchedAlerts = {}
 
 					sum = 0
-					for key in allAlerts: sum += len(allAlerts[key])
+					for key in fetchedAlerts: sum += len(fetchedAlerts[key])
 
 					if sum >= 10:
-						try: await message.channel.send("Only 10 alerts per exchange are allowed")
-						except: await self.unknown_error(message)
+						embed = discord.Embed(title="Only 10 alerts per exchange are allowed", color=constants.colors["gray"])
+						embed.set_author(name="Maximum number of alerts reached", icon_url=firebase_storage.icon_bw)
+						try: await message.channel.send(embed=embed)
+						except Exception as e: await self.unknown_error(message, authorId, e)
 						return
 
 					key = symbol.replace("/", "-")
@@ -1595,80 +1541,104 @@ class Alpha(discord.AutoShardedClient):
 						"id": "%013x" % random.randrange(10**15),
 						"timestamp": time.time(),
 						"time": Utils.get_current_date(),
-						"channel": message.author.id,
+						"channel": authorId,
 						"action": action,
 						"level": level,
 						"repeat": repeat
 					}
+					levelText = Utils.format_price(self.coinParser.exchanges[exchange], symbol, level)
 
-					if key not in allAlerts: allAlerts[key] = []
-					for alert in allAlerts[key]:
+					if key not in fetchedAlerts: fetchedAlerts[key] = []
+					for alert in fetchedAlerts[key]:
 						if alert["action"] == action and alert["level"] == level:
-							try: await message.channel.send("This alert already exists")
-							except: await self.unknown_error(message)
+							embed = discord.Embed(title="{} alert for {} ({}) at {} {} already exists".format(action.title(), base, self.coinParser.exchanges[exchange].name, levelText, quote), color=constants.colors["gray"])
+							embed.set_author(name="Alert already exists", icon_url=firebase_storage.icon_bw)
+							try: await message.channel.send(embed=embed)
+							except Exception as e: await self.unknown_error(message, authorId, e)
 							return
 
-					allAlerts[key].append(newAlert)
+					fetchedAlerts[key].append(newAlert)
 
 					try:
 						batch = db.batch()
-						batch.set(alertsRef, allAlerts, merge=True)
+						batch.set(alertsRef, fetchedAlerts, merge=True)
 						for i in range(1, self.fusion.numInstances + 1):
 							batch.set(db.document(u'fusion/instance-{}'.format(i)), {"needsUpdate": True}, merge=True)
 						batch.commit()
 					except:
-						await self.unknown_error(message)
+						await self.unknown_error(message, authorId, e)
 						return
 
-					levelText = Utils.format_price(self.coinParser.exchanges[exchange], symbol, level)
+					embed = discord.Embed(title="{} alert set for {} ({}) at {} {}".format(action.title(), base, self.coinParser.exchanges[exchange].name, levelText, quote), color=constants.colors["deep purple"])
+					embed.set_author(name="Alert successfully set", icon_url=firebase_storage.icon)
+					try: sentMessages.append(await message.channel.send(embed=embed))
+					except Exception as e: await self.unknown_error(message, authorId, e)
 
-					try: await message.channel.send("{} alert set for {} ({}) at **{} {}**".format(action.title(), base, self.coinParser.exchanges[exchange].name, levelText, quote))
-					except: pass
+					threading.Thread(target=self.fusion.command_stream, args=([message] + sentMessages,)).start()
 				else:
-					try: await message.channel.send("Invalid command usage. Type `alert help` to learn more")
-					except: await self.unknown_error(message)
+					embed = discord.Embed(title="Invalid command usage. Type `alert help` to learn more.", color=constants.colors["gray"])
+					embed.set_author(name="Invalid usage", icon_url=firebase_storage.icon_bw)
+					try: await message.channel.send(embed=embed)
+					except Exception as e: await self.unknown_error(message, authorId, e)
 			elif method in ["list", "all"]:
 				if len(arguments) == 1:
-					try: await message.channel.send("__**Alerts:**__")
+					try: await message.channel.trigger_typing()
 					except: pass
 
-					alertsList = []
-					for id in constants.supportedExchanges["alerts"]:
-						userAlerts = db.collection(u"alpha/alerts/{}".format(id)).stream()
+					alertsList = {}
+					numberOfAlerts = 0
+					for exchange in constants.supportedExchanges["alerts"]:
+						userAlerts = db.collection(u"alpha/alerts/{}".format(exchange)).stream()
 						if userAlerts is not None:
 							for user in userAlerts:
-								if int(user.id) == message.author.id:
-									allAlerts = user.to_dict()
+								if int(user.id) == authorId:
+									fetchedAlerts = user.to_dict()
 									hasAlerts = False
-									for s in allAlerts:
-										hasAlerts = hasAlerts or len(allAlerts[s]) > 0
-										for alert in allAlerts[s]:
-											symbol = s.replace("-", "/")
-											base = self.coinParser.exchanges[id].markets[symbol]["base"]
-											quote = self.coinParser.exchanges[id].markets[symbol]["quote"]
-											coinPair = self.coinParser.exchanges[id].markets[symbol]["id"].replace("_", "").replace("/", "").replace("-", "").upper()
-											levelText = Utils.format_price(self.coinParser.exchanges[id], symbol, alert["level"])
-
-											try:
-												alertMessage = await message.channel.send("● {} alert set for {} ({}) at **{} {}** *(id: {})*".format(alert["action"].title(), coinPair, self.coinParser.exchanges[id].name, levelText, quote, alert["id"]))
-												await alertMessage.add_reaction('❌')
-											except: pass
+									for s in fetchedAlerts:
+										numberOfAlerts += len(fetchedAlerts[s])
+										if exchange not in alertsList: alertsList[exchange] = {}
+										if len(fetchedAlerts[s]) and s.replace("-", "/") not in alertsList: alertsList[exchange][s.replace("-", "/")] = fetchedAlerts[s]
 									break
 
-					if not hasAlerts:
-						try: await message.channel.send("You don't have any alerts set")
-						except: await self.unknown_error(message)
+					if numberOfAlerts != 0:
+						count = 0
+						for exchange in sorted(alertsList.keys()):
+							for symbol in sorted(alertsList[exchange].keys()):
+								orderedAlertsList = {}
+								for alert in alertsList[exchange][symbol]:
+									orderedAlertsList[alert["level"]] = alert
+								for i in sorted(orderedAlertsList.keys()):
+									alert = orderedAlertsList[i]
+									count += 1
+									base = self.coinParser.exchanges[exchange].markets[symbol]["base"]
+									quote = self.coinParser.exchanges[exchange].markets[symbol]["quote"]
+									marketPair = self.coinParser.exchanges[exchange].markets[symbol]["id"].replace("_", "").replace("/", "").replace("-", "").upper()
+									levelText = Utils.format_price(self.coinParser.exchanges[exchange], symbol, alert["level"])
+
+									embed = discord.Embed(title="{} alert set for {} ({}) at {} {}".format(alert["action"].title(), marketPair, self.coinParser.exchanges[exchange].name, levelText, quote), color=constants.colors["deep purple"])
+									embed.set_footer(text="Alert {}/{} ● (id: {})".format(count, numberOfAlerts, alert["id"]))
+									try:
+										alertMessage = await message.channel.send(embed=embed)
+										await alertMessage.add_reaction('❌')
+									except: pass
+					else:
+						embed = discord.Embed(title="You don't have any alerts set", color=constants.colors["gray"])
+						embed.set_author(name="No alerts", icon_url=firebase_storage.icon)
+						try: await message.channel.send(embed=embed)
+						except Exception as e: await self.unknown_error(message, authorId, e)
 				else:
-					try: await message.channel.send("Invalid command usage. Type `alert help` to learn more")
-					except: await self.unknown_error(message)
+					embed = discord.Embed(title="Invalid command usage. Type `alert help` to learn more.", color=constants.colors["gray"])
+					embed.set_author(name="Invalid usage", icon_url=firebase_storage.icon_bw)
+					try: await message.channel.send(embed=embed)
+					except Exception as e: await self.unknown_error(message, authorId, e)
 		except asyncio.CancelledError: pass
 		except Exception as e:
-			await self.unknown_error(message, report=True)
+			await self.unknown_error(message, authorId, e, report=True)
 			exc_type, exc_obj, exc_tb = sys.exc_info()
 			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
 			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, raw))
 
-	async def presets(self, message, raw, guildId, mute=False):
+	async def presets(self, message, authorId, raw, guildId, mute=False):
 		try:
 			isServer = raw.startswith("server ") and message.author.guild_permissions.administrator
 			offset = 1 if isServer else 0
@@ -1680,166 +1650,607 @@ class Alpha(discord.AutoShardedClient):
 					try: await message.channel.trigger_typing()
 					except: pass
 
-					fetchedSettingsRef = db.document(u"alpha/settings/{}/{}".format("servers" if isServer else "users", guildId if isServer else message.author.id))
+					fetchedSettingsRef = db.document(u"alpha/settings/{}/{}".format("servers" if isServer else "users", guildId if isServer else authorId))
 					fetchedSettings = fetchedSettingsRef.get().to_dict()
 					fetchedSettings = Utils.createServerSetting(fetchedSettings) if isServer else Utils.createUserSettings(fetchedSettings)
-					fetchedSettings, statusMessage = Presets.updatePresets(fetchedSettings, add=arguments[1 + offset].replace("`", ""), shortcut=arguments[2 + offset])
+					fetchedSettings, status = Presets.updatePresets(fetchedSettings, add=arguments[1 + offset].replace("`", ""), shortcut=arguments[2 + offset])
+					statusTitle, statusMessage, statusColor = status
 					fetchedSettingsRef.set(fetchedSettings, merge=True)
 					if isServer: self.guildProperties[guildId] = copy.deepcopy(fetchedSettings)
-					else: self.userProperties[message.author.id] = copy.deepcopy(fetchedSettings)
+					else: self.userProperties[authorId] = copy.deepcopy(fetchedSettings)
 
-					try: await message.channel.send(statusMessage)
-					except: await self.unknown_error(message)
+					embed = discord.Embed(title=statusMessage, color=constants.colors[statusColor])
+					embed.set_author(name=statusTitle, icon_url=firebase_storage.icon)
+					try: await message.channel.send(embed=embed)
+					except Exception as e: await self.unknown_error(message, authorId, e)
 			elif method in ["list", "all"]:
 				if len(arguments) == 1 + offset:
-					hasSettings = guildId in self.guildProperties if isServer else message.author.id in self.userProperties
-					settings = {} if not hasSettings else (self.guildProperties[guildId] if isServer else self.userProperties[message.author.id])
+					try: await message.channel.trigger_typing()
+					except: pass
+
+					hasSettings = guildId in self.guildProperties if isServer else authorId in self.userProperties
+					settings = {} if not hasSettings else (self.guildProperties[guildId] if isServer else self.userProperties[authorId])
 					settings = Utils.createServerSetting(settings) if isServer else Utils.createUserSettings(settings)
-					try: await message.channel.send("__**Presets:**__")
-					except: await self.unknown_error(message)
+
 					if len(settings["presets"]) > 0:
+						allPresets = {}
+						numberOfPresets = len(settings["presets"])
 						for preset in settings["presets"]:
+							allPresets[preset["phrase"]] = preset["shortcut"]
+
+						for i, phrase in enumerate(sorted(allPresets.keys())):
+							embed = discord.Embed(title="`{}`{} → `{}`".format(phrase, " (server-wide)" if isServer else "", allPresets[phrase]), color=constants.colors["deep purple"])
+							embed.set_footer(text="Preset {}/{}".format(i + 1, numberOfPresets))
 							try:
-								presetMessage = await message.channel.send("● {}{} `{}`".format(preset["phrase"], " (server-wide)" if isServer else "", preset["shortcut"]))
+								presetMessage = await message.channel.send(embed=embed)
 								await presetMessage.add_reaction('❌')
 							except: pass
 					else:
-						try: await message.channel.send("You don't have any presets set")
-						except: await self.unknown_error(message)
+						embed = discord.Embed(title="You don't have any presets set", color=constants.colors["gray"])
+						embed.set_author(name="No presets", icon_url=firebase_storage.icon)
+						try: await message.channel.send(embed=embed)
+						except Exception as e: await self.unknown_error(message, authorId, e)
 			elif len(arguments) <= 3 + offset:
-				try: await message.channel.send("Invalid argument: **{}**. \nType `preset help` to learn more".format(method))
-				except: await self.unknown_error(message)
-				return
+				embed = discord.Embed(title="`{}` is not a valid argument. Type `preset help` to learn more.".format(method), color=constants.colors["gray"])
+				embed.set_author(name="Invalid argument", icon_url=firebase_storage.icon_bw)
+				try: await message.channel.send(embed=embed)
+				except Exception as e: await self.unknown_error(message, authorId, e)
 		except asyncio.CancelledError: pass
 		except Exception as e:
-			await self.unknown_error(message, report=True)
+			await self.unknown_error(message, authorId, e, report=True)
 			exc_type, exc_obj, exc_tb = sys.exc_info()
 			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
 			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, raw))
 
-	async def chart(self, message, raw, mute=False):
+	async def tradingview_chart(self, message, authorId, raw, mute=False, canForward=False):
 		try:
 			sentMessages = []
-			with message.channel.typing():
-				arguments = raw.split(" ")
+			arguments = raw.split(" ")
 
-				tickerId, exchange, tickerParts, isAggregatedSymbol = self.coinParser.process_ticker(arguments[0].upper(), self.coinParser.coins["charts"], isOnlyCrypto=False)
-				outputMessage, tickerId, arguments = self.imageProcessor.process_tradingview_arguments(arguments, tickerId, exchange, tickerParts)
-				if outputMessage is not None:
-					if not mute:
-						try: await message.channel.send(outputMessage)
-						except: await self.unknown_error(message)
-					if arguments is None:
-						return ([], 0)
-				timeframes, exchange, sendLink, isLog, barStyle, hideVolume, theme, indicators, isWide = arguments
+			tickerId, exchange, tickerParts, isAggregatedSymbol, isCryptoTicker = self.coinParser.process_ticker(arguments[0].upper(), "charts", useCryptoParser=False)
+			outputMessage, tickerId, arguments = self.imageProcessor.process_tradingview_arguments(arguments, tickerId, exchange, tickerParts)
+			if outputMessage is not None:
+				if not mute:
+					embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
+					embed.set_author(name="Invalid argument", icon_url=firebase_storage.icon_bw)
+					try: sentMessages.append(await message.channel.send(embed=embed))
+					except Exception as e: await self.unknown_error(message, authorId, e)
+				if arguments is None:
+					return ([], 0)
+			timeframes, exchange, sendLink, isLog, barStyle, hideVolume, theme, indicators, isWide = arguments
 
-				if not isAggregatedSymbol:
-					for i in range(3):
+			try: await message.channel.trigger_typing()
+			except: pass
+
+			if not isAggregatedSymbol:
+				for i in range(3):
+					if i == 2: self.coinParser.refresh_coins()
+					if exchange == "" and tickerId not in ["XBTUSD"] and self.coinParser.exchanges["binance"].symbols is not None:
 						if i == 2: self.coinParser.refresh_coins()
-						if exchange == "" and tickerId not in ["XBTUSD"] and self.coinParser.exchanges["binance"].symbols is not None:
-							if i == 2: self.coinParser.refresh_coins()
-							for symbol in self.coinParser.exchanges["binance"].symbols:
-								pair = symbol.split("/")
-								if (tickerId.startswith(pair[0]) and (tickerId.replace(pair[0], "").endswith(pair[-1]) or tickerId.replace(pair[0], "").endswith(pair[-1].replace("USDT", "USD")) or (tickerId.replace(pair[0], "").endswith(pair[-1].replace("USDC", "USD").replace("TUSD", "USD").replace("USDS", "USD").replace("PAX", "USD")) and i != 0))) or (tickerId == pair[0] and len(pair) == 1):
-									if tickerId.replace(pair[0], "") == "USD": tickerId = tickerId.replace("USD", "USDT")
-									exchange = "BINANCE:"
-									break
+						for symbol in self.coinParser.exchanges["binance"].symbols:
+							pair = symbol.split("/")
+							if (tickerId.startswith(pair[0]) and (tickerId.replace(pair[0], "").endswith(pair[-1]) or tickerId.replace(pair[0], "").endswith(pair[-1].replace("USDT", "USD")) or (tickerId.replace(pair[0], "").endswith(pair[-1].replace("USDC", "USD").replace("TUSD", "USD").replace("USDS", "USD").replace("PAX", "USD")) and i != 0))) or (tickerId == pair[0] and len(pair) == 1):
+								if tickerId.replace(pair[0], "") == "USD": tickerId = tickerId.replace("USD", "USDT")
+								exchange = "BINANCE:"
+								break
 
-				for timeframe in timeframes:
-					queueLength = [len(self.imageProcessor.screengrabLock[e]) for e in self.imageProcessor.screengrabLock]
-					driverInstance = queueLength.index(min(queueLength))
-
-					waitMessage = None
-					if len(self.imageProcessor.screengrabLock[driverInstance]) > 2:
-						try: waitMessage = await message.channel.send("One moment...")
-						except: pass
-						await asyncio.sleep(0.5)
-
-					messageUrl = "https://www.tradingview.com/widgetembed/?symbol={}{}&hidesidetoolbar=0&symboledit=1&saveimage=1&withdateranges=1&enablepublishing=true&interval={}&theme={}&style={}&studies={}".format(urllib.parse.quote(exchange, safe=""), urllib.parse.quote(tickerId, safe=""), timeframe, theme, barStyle, "%1F".join(indicators))
-					chartName = await self.imageProcessor.request_tradingview_chart(message.author.id, driverInstance, tickerId, timeframe, exchange, sendLink, isLog, barStyle, hideVolume, theme, indicators, isWide)
-
-					if waitMessage is not None:
-						try: await waitMessage.delete()
-						except: pass
-					if chartName is None:
-						try:
-							chartMessage = await message.channel.send("Requested chart for **{}** is not available".format(tickerId))
-							sentMessages.append(chartMessage)
-							try: await chartMessage.add_reaction("☑")
-							except: pass
-						except: await self.unknown_error(message)
-						return (sentMessages, len(sentMessages))
-
-					try:
-						chartMessage = await message.channel.send(messageUrl if sendLink else "", file=discord.File("charts/" + chartName, chartName))
-						sentMessages.append(chartMessage)
-						try: await chartMessage.add_reaction("☑")
-						except: pass
-					except: await self.unknown_error(message)
-
-					chartsFolder = "./charts/"
-					files = sorted(os.listdir(chartsFolder))
-					numOfFiles = len([chartName for chartName in files if ".png" in chartName and os.path.isfile(os.path.join(chartsFolder, chartName))])
-					if numOfFiles > 100:
-						for i in range(numOfFiles - 100):
-							os.remove(os.path.join(chartsFolder, files[i]))
-
-			return (sentMessages, len(sentMessages))
-		except asyncio.CancelledError: return ([], 0)
-		except Exception as e:
-			await self.unknown_error(message, report=True)
-			self.rateLimited["c"] = {}
-			exc_type, exc_obj, exc_tb = sys.exc_info()
-			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, raw))
-			return ([], 0)
-
-	async def fear_greed_index(self, message, raw, mute=False):
-		try:
-			sentMessages = []
-			with message.channel.typing():
-				chartName = self.imageProcessor.request_feargreedindex_chart(message.author.id)
-
-				try:
-					chartMessage = await message.channel.send(file=discord.File("charts/" + chartName, chartName))
-					sentMessages.append(chartMessage)
-					await chartMessage.add_reaction("☑")
-				except: await self.unknown_error(message)
-
-			return (sentMessages, len(sentMessages))
-		except Exception as e:
-			await self.unknown_error(message, report=True)
-			self.rateLimited["c"] = {}
-			exc_type, exc_obj, exc_tb = sys.exc_info()
-			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, raw))
-			return ([], 0)
-
-	async def nvt_signal(self, message, raw, mute=False):
-		try:
-			sentMessages = []
-			with message.channel.typing():
+			for timeframe in timeframes:
 				queueLength = [len(self.imageProcessor.screengrabLock[e]) for e in self.imageProcessor.screengrabLock]
 				driverInstance = queueLength.index(min(queueLength))
 
 				waitMessage = None
 				if len(self.imageProcessor.screengrabLock[driverInstance]) > 2:
-					try: waitMessage = await message.channel.send("One moment...")
+					embed = discord.Embed(title="One moment...", color=constants.colors["gray"])
+					try:  waitMessage = await message.channel.send(embed=embed)
 					except: pass
 					await asyncio.sleep(0.5)
 
-				chartName = await self.imageProcessor.request_nvtsignal_chart(message.author.id, driverInstance)
+				try: await message.channel.trigger_typing()
+				except: pass
+
+				messageUrl = "https://www.tradingview.com/widgetembed/?symbol={}{}&hidesidetoolbar=0&symboledit=1&saveimage=1&withdateranges=1&enablepublishing=true&interval={}&theme={}&style={}&studies={}".format(urllib.parse.quote(exchange, safe=""), urllib.parse.quote(tickerId, safe=""), timeframe, theme, barStyle, "%1F".join(indicators))
+				chartName = await self.imageProcessor.request_tradingview_chart(authorId, driverInstance, tickerId, timeframe, exchange, isLog, barStyle, hideVolume, theme, indicators, isWide)
 
 				if waitMessage is not None:
 					try: await waitMessage.delete()
 					except: pass
 				if chartName is None:
 					try:
-						chartMessage = await message.channel.send("Requested chart for **NVT** is not available")
+						if isCryptoTicker or not canForward:
+							embed = discord.Embed(title="Requested chart for `{}` is not available".format(tickerId), color=constants.colors["gray"])
+							embed.set_author(name="Chart not available", icon_url=firebase_storage.icon_bw)
+							chartMessage = await message.channel.send(embed=embed)
+							sentMessages.append(chartMessage)
+							try: await chartMessage.add_reaction("☑")
+							except: pass
+						else:
+							return await self.finviz_chart(message, authorId, raw, mute=True, isForwarded=True)
+					except Exception as e: await self.unknown_error(message, authorId, e)
+					return (sentMessages, len(sentMessages))
+
+				try:
+					embed = discord.Embed(title="{}".format(messageUrl), color=constants.colors["deep purple"])
+					chartMessage = await message.channel.send(embed=embed if sendLink else None, file=discord.File("charts/" + chartName, chartName))
+					sentMessages.append(chartMessage)
+					try: await chartMessage.add_reaction("☑")
+					except: pass
+				except Exception as e: await self.unknown_error(message, authorId, e)
+
+				self.imageProcessor.clean_cache()
+
+			threading.Thread(target=self.fusion.command_stream, args=([message] + sentMessages,)).start()
+			return (sentMessages, len(sentMessages))
+		except asyncio.CancelledError: return ([], 0)
+		except Exception as e:
+			await self.unknown_error(message, authorId, e, report=True)
+			self.rateLimited["c"] = {}
+			exc_type, exc_obj, exc_tb = sys.exc_info()
+			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, raw))
+			return ([], 0)
+
+	async def fear_greed_index(self, message, authorId, raw, mute=False):
+		try:
+			try: await message.channel.trigger_typing()
+			except: pass
+
+			sentMessages = []
+
+			chartFile = self.alternativemeConnection.fear_greed_index_c(authorId)
+			try:
+				chartMessage = await message.channel.send(file=chartFile)
+				sentMessages.append(chartMessage)
+				await chartMessage.add_reaction("☑")
+			except Exception as e: await self.unknown_error(message, authorId, e)
+
+			threading.Thread(target=self.fusion.command_stream, args=([message] + sentMessages,)).start()
+			return (sentMessages, len(sentMessages))
+		except Exception as e:
+			await self.unknown_error(message, authorId, e, report=True)
+			self.rateLimited["c"] = {}
+			exc_type, exc_obj, exc_tb = sys.exc_info()
+			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, raw))
+			return ([], 0)
+
+	async def woobull_chart(self, message, authorId, raw, chartType, mute=False):
+		try:
+			try: await message.channel.trigger_typing()
+			except: pass
+
+			sentMessages = []
+
+			queueLength = [len(self.imageProcessor.screengrabLock[e]) for e in self.imageProcessor.screengrabLock]
+			driverInstance = queueLength.index(min(queueLength))
+
+			waitMessage = None
+			if len(self.imageProcessor.screengrabLock[driverInstance]) > 2:
+				embed = discord.Embed(title="One moment...", color=constants.colors["gray"])
+				try:  waitMessage = await message.channel.send(embed=embed)
+				except: pass
+				await asyncio.sleep(0.5)
+
+			chartName = await self.imageProcessor.request_woobull_chart(authorId, driverInstance, chartType)
+
+			if waitMessage is not None:
+				try: await waitMessage.delete()
+				except: pass
+			if chartName is None:
+				try:
+					embed = discord.Embed(title="Requested chart for `{}` is not available".format(chartType), color=constants.colors["gray"])
+					embed.set_author(name="Chart not available", icon_url=firebase_storage.icon_bw)
+					chartMessage = await message.channel.send(embed=embed)
+					sentMessages.append(chartMessage)
+					try: await chartMessage.add_reaction("☑")
+					except: pass
+				except Exception as e: await self.unknown_error(message, authorId, e)
+				return (sentMessages, len(sentMessages))
+
+			try:
+				chartMessage = await message.channel.send(file=discord.File("charts/" + chartName, chartName))
+				sentMessages.append(chartMessage)
+				try: await chartMessage.add_reaction("☑")
+				except: pass
+			except Exception as e: await self.unknown_error(message, authorId, e)
+
+			self.imageProcessor.clean_cache()
+
+			threading.Thread(target=self.fusion.command_stream, args=([message] + sentMessages,)).start()
+			return (sentMessages, len(sentMessages))
+		except asyncio.CancelledError: return ([], 0)
+		except Exception as e:
+			await self.unknown_error(message, authorId, e, report=True)
+			exc_type, exc_obj, exc_tb = sys.exc_info()
+			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, raw))
+			return ([], 0)
+
+	async def price(self, message, authorId, raw, isPremium, mute=False):
+		try:
+			sentMessages = []
+			arguments = raw.split(" ")
+
+			tickerId, exchange, tickerParts, isAggregatedSymbol, isCryptoTicker = self.coinParser.process_ticker(arguments[0].upper(), "ohlcv", exchangeFallthrough=True)
+			if isAggregatedSymbol:
+				if not mute:
+					embed = discord.Embed(title="Aggregated tickers aren't supported with the `p` command", color=constants.colors["gray"])
+					embed.set_author(name="Aggregated tickers", icon_url=firebase_storage.icon_bw)
+					try: await message.channel.send(embed=embed)
+					except Exception as e: await self.unknown_error(message, authorId, e)
+				return
+
+			outputMessage, tickerId, arguments = self.coinParser.process_coin_data_arguments(arguments, tickerId, exchange, hasActions=True, command="p")
+			if outputMessage is not None:
+				if not mute:
+					embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
+					embed.set_author(name="Invalid argument", icon_url=firebase_storage.icon_bw)
+					try: await message.channel.send(embed=embed)
+					except Exception as e: await self.unknown_error(message, authorId, e)
+				return
+			action, exchange = arguments
+			exchangeFallthrough = (tickerId.endswith(("USD", "BTC")) and exchange == "")
+
+			outputMessage, details = self.coinParser.find_market_pair(tickerId, exchange, "ohlcv", exchangeFallthrough=exchangeFallthrough)
+			availableOnCoinGecko = (tickerId.lower() if details is None else details[1].lower()) in self.coinGeckoConnection.coinGeckoIndex
+			useFallback = (outputMessage == "Ticker `{}` was not found".format(tickerId) or exchangeFallthrough) and availableOnCoinGecko
+			if outputMessage is not None and not useFallback:
+				if not mute:
+					embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
+					embed.set_author(name="Ticker not found", icon_url=firebase_storage.icon_bw)
+					try: await message.channel.send(embed=embed)
+					except Exception as e: await self.unknown_error(message, authorId, e)
+				return
+			symbol, base, quote, marketPair, exchange = (tickerId, tickerId, "BTC", "{}BTC".format(tickerId), "CoinGecko") if useFallback and details is None else details
+			if useFallback: exchange = "CoinGecko"
+			coinThumbnail = firebase_storage.icon_bw
+
+			try: await message.channel.trigger_typing()
+			except: pass
+
+			if action == "funding":
+				try: sentMessages.append(await message.channel.send(embed=self.exchangeConnection.funding(self.coinParser.exchanges[exchange], marketPair, tickerId)))
+				except Exception as e: await self.unknown_error(message, authorId, e)
+			elif action == "oi":
+				try: sentMessages.append(await message.channel.send(embed=self.exchangeConnection.open_interest(self.coinParser.exchanges[exchange], marketPair, tickerId, isPremium)))
+				except Exception as e: await self.unknown_error(message, authorId, e)
+			elif action == "premiums":
+				try: coinThumbnail = self.coinGeckoConnection.coinGeckoIndex[base.lower()]["image"]
+				except: pass
+				try: sentMessages.append(await message.channel.send(embed=self.coinParser.premiums(marketPair, tickerId, coinThumbnail)))
+				except Exception as e: await self.unknown_error(message, authorId, e)
+			elif action == "ls":
+				try: coinThumbnail = self.coinGeckoConnection.coinGeckoIndex[base.lower()]["image"]
+				except: pass
+				try: sentMessages.append(await message.channel.send(embed=self.coinParser.long_short_ratio(self.coinParser.exchanges["bitfinex2"], marketPair, tickerId, coinThumbnail, False)))
+				except Exception as e: await self.unknown_error(message, authorId, e)
+			elif action == "sl":
+				try: coinThumbnail = self.coinGeckoConnection.coinGeckoIndex[base.lower()]["image"]
+				except: pass
+				try: sentMessages.append(await message.channel.send(embed=self.coinParser.long_short_ratio(self.coinParser.exchanges["bitfinex2"], marketPair, tickerId, coinThumbnail, True)))
+				except Exception as e: await self.unknown_error(message, authorId, e)
+			elif action == "dom":
+				try: sentMessages.append(await message.channel.send(embed=self.coinGeckoConnection.coin_dominance(base)))
+				except Exception as e: await self.unknown_error(message, authorId, e)
+			elif action == "mcap":
+				try: sentMessages.append(await message.channel.send(embed=self.coinGeckoConnection.total_market_cap()))
+				except Exception as e: await self.unknown_error(message, authorId, e)
+			elif action == "fgi":
+				try: sentMessages.append(await message.channel.send(embed=self.alternativemeConnection.fear_greed_index_p()))
+				except Exception as e: await self.unknown_error(message, authorId, e)
+			else:
+				if useFallback:
+					try:
+						cgData = self.coinGeckoConnection.coingecko.get_coin_by_id(id=self.coinGeckoConnection.coinGeckoIndex[base.lower()]["id"], localization="false", tickers=False, market_data=True, community_data=False, developer_data=False)
+					except:
+						embed = discord.Embed(title="Price data for {} from CoinGecko isn't available".format(marketPair), color=constants.colors["gray"])
+						embed.set_author(name="Couldn't get price data", icon_url=firebase_storage.icon_bw)
+						try: await message.channel.send(embed=embed)
+						except Exception as e: await self.unknown_error(message, authorId, e)
+						return
+
+					quote = quote if quote.lower() in cgData["market_data"]["current_price"] else "BTC"
+					percentChange = cgData["market_data"]["price_change_percentage_24h_in_currency"][quote.lower()] if quote.lower() in cgData["market_data"]["price_change_percentage_24h_in_currency"] else 0
+					percentChangeText = " *({:+.2f} %)*".format(percentChange)
+					embedColor = constants.colors["amber" if percentChange == 0 else ("green" if percentChange > 0 else "red")]
+					coinThumbnail = self.coinGeckoConnection.coinGeckoIndex[base.lower()]["image"]
+					priceText = ("{:,.%df}" % (2 if quote == "USD" else 8)).format(cgData["market_data"]["current_price"][quote.lower()])
+					usdConversion = None if quote == "USD" else "≈ ${:,.6f}".format(cgData["market_data"]["current_price"]["usd"])
+				else:
+					tf, limitTimestamp, candleOffset = Utils.get_highest_supported_timeframe(self.coinParser.exchanges[exchange], datetime.datetime.now().astimezone(pytz.utc))
+					if symbol in self.rateLimited["p"][exchange] and symbol in self.rateLimited["v"][exchange]:
+						price = self.rateLimited["p"][exchange][symbol]
+						volume = self.rateLimited["v"][exchange][symbol]
+
+						try: coinThumbnail = self.coinGeckoConnection.coinGeckoIndex[base.lower()]["image"]
+						except: pass
+					else:
+						try:
+							priceData = self.coinParser.exchanges[exchange].fetch_ohlcv(symbol, timeframe=tf.lower(), since=limitTimestamp, limit=500)
+						except:
+							embed = discord.Embed(title="Price data for {} on {} isn't available".format(marketPair, self.coinParser.exchanges[exchange].name), color=constants.colors["gray"])
+							embed.set_author(name="Couldn't get price data", icon_url=firebase_storage.icon_bw)
+							try: await message.channel.send(embed=embed)
+							except Exception as e: await self.unknown_error(message, authorId, e)
+							return
+
+						try: coinThumbnail = self.coinGeckoConnection.coinGeckoIndex[base.lower()]["image"]
+						except: pass
+
+						price = [priceData[-1][4], priceData[0][1]] if len(priceData) < candleOffset else [priceData[-1][4], priceData[-candleOffset][1]]
+						volume = sum([candle[5] for candle in priceData if int(candle[0] / 1000) >= int(self.coinParser.exchanges[exchange].milliseconds() / 1000) - 86400])
+						if exchange == "bitmex" and symbol == "BTC/USD": self.coinParser.lastBitcoinPrice = price[0]
+						self.rateLimited["p"][exchange][symbol] = price
+						self.rateLimited["v"][exchange][symbol] = volume
+
+					percentChange = 0 if tf == "1m" else (price[0] / price[1]) * 100 - 100
+					percentChangeText = "" if tf == "1m" else " *({:+.2f} %)*".format(percentChange)
+					embedColor = constants.colors["amber"] if tf == "1m" else constants.colors["amber" if percentChange == 0 else ("green" if percentChange > 0 else "red")]
+					priceText = Utils.format_price(self.coinParser.exchanges[exchange], symbol, price[0])
+					usdConversion = "≈ ${:,.6f}".format(price[0] * self.coinParser.lastBitcoinPrice) if quote == "BTC" else None
+
+				embed = discord.Embed(title="{} {}{}".format(priceText, quote.replace("USDT", "USD").replace("USDC", "USD").replace("TUSD", "USD").replace("USDS", "USD").replace("PAX", "USD"), percentChangeText), description=usdConversion, color=embedColor)
+				embed.set_author(name=marketPair, icon_url=coinThumbnail)
+				embed.set_footer(text="Price on {}".format("CoinGecko" if exchange == "CoinGecko" else self.coinParser.exchanges[exchange].name))
+				try: sentMessages.append(await message.channel.send(embed=embed))
+				except Exception as e: await self.unknown_error(message, authorId, e)
+
+				if not useFallback: threading.Thread(target=self.clear_rate_limit_cache, args=(exchange, symbol, ["p", "v"], self.coinParser.exchanges[exchange].rateLimit / 1000)).start()
+
+			threading.Thread(target=self.fusion.command_stream, args=([message] + sentMessages,)).start()
+			return
+		except asyncio.CancelledError: pass
+		except Exception as e:
+			await self.unknown_error(message, authorId, e, report=True)
+			for id in constants.supportedExchanges["ohlcv"]:
+				self.rateLimited["p"][id] = {}
+				self.rateLimited["v"][id] = {}
+			exc_type, exc_obj, exc_tb = sys.exc_info()
+			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, raw))
+
+	async def volume(self, message, authorId, raw, mute=False):
+		try:
+			sentMessages = []
+			arguments = raw.split(" ")
+
+			tickerId, exchange, tickerParts, isAggregatedSymbol, isCryptoTicker = self.coinParser.process_ticker(arguments[0].upper(), "ohlcv", exchangeFallthrough=True)
+			if isAggregatedSymbol:
+				if not mute:
+					embed = discord.Embed(title="Aggregated tickers aren't supported with the `v` command", color=constants.colors["gray"])
+					embed.set_author(name="Aggregated tickers", icon_url=firebase_storage.icon_bw)
+					try: await message.channel.send(embed=embed)
+					except Exception as e: await self.unknown_error(message, authorId, e)
+				return
+
+			outputMessage, tickerId, arguments = self.coinParser.process_coin_data_arguments(arguments, tickerId, exchange, command="v")
+			if outputMessage is not None:
+				if not mute:
+					embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
+					embed.set_author(name="Invalid argument", icon_url=firebase_storage.icon_bw)
+					try: await message.channel.send(embed=embed)
+					except Exception as e: await self.unknown_error(message, authorId, e)
+				return
+			_, exchange = arguments
+			exchangeFallthrough = (tickerId.endswith(("USD", "BTC")) and exchange == "")
+
+			outputMessage, details = self.coinParser.find_market_pair(tickerId, exchange, "ohlcv", exchangeFallthrough=exchangeFallthrough)
+			availableOnCoinGecko = (tickerId.lower() if details is None else details[1].lower()) in self.coinGeckoConnection.coinGeckoIndex
+			useFallback = (outputMessage == "Ticker `{}` was not found".format(tickerId) or exchangeFallthrough) and availableOnCoinGecko
+			if outputMessage is not None and not useFallback:
+				if not mute:
+					embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
+					embed.set_author(name="Ticker not found", icon_url=firebase_storage.icon_bw)
+					try: await message.channel.send(embed=embed)
+					except Exception as e: await self.unknown_error(message, authorId, e)
+				return
+			symbol, base, quote, marketPair, exchange = (tickerId, tickerId, "BTC", "{}BTC".format(tickerId), "CoinGecko") if useFallback and details is None else details
+			if useFallback: exchange = "CoinGecko"
+			coinThumbnail = firebase_storage.icon_bw
+
+			try: await message.channel.trigger_typing()
+			except: pass
+
+			if useFallback:
+				try:
+					cgData = self.coinGeckoConnection.coingecko.get_coin_by_id(id=self.coinGeckoConnection.coinGeckoIndex[base.lower()]["id"], localization="false", tickers=False, market_data=True, community_data=False, developer_data=False)
+				except:
+					embed = discord.Embed(title="Volume data for {} from CoinGecko isn't available".format(marketPair), color=constants.colors["gray"])
+					embed.set_author(name="Couldn't get volume data", icon_url=firebase_storage.icon_bw)
+					try: await message.channel.send(embed=embed)
+					except Exception as e: await self.unknown_error(message, authorId, e)
+					return
+
+				coinThumbnail = self.coinGeckoConnection.coinGeckoIndex[base.lower()]["image"]
+				base, quote = base if base.lower() in cgData["market_data"]["current_price"] else "BTC", "USD"
+				volume = cgData["market_data"]["total_volume"][base.lower()]
+				volumeUsd = cgData["market_data"]["total_volume"]["usd"]
+			else:
+				tf, limitTimestamp, candleOffset = Utils.get_highest_supported_timeframe(self.coinParser.exchanges[exchange], datetime.datetime.now().astimezone(pytz.utc))
+				if symbol in self.rateLimited["p"][exchange] and symbol in self.rateLimited["v"][exchange]:
+					price = self.rateLimited["p"][exchange][symbol]
+					volume = self.rateLimited["v"][exchange][symbol]
+
+					try: coinThumbnail = self.coinGeckoConnection.coinGeckoIndex[base.lower()]["image"]
+					except: pass
+				else:
+					try:
+						priceData = self.coinParser.exchanges[exchange].fetch_ohlcv(symbol, timeframe=tf.lower(), since=limitTimestamp, limit=500)
+					except:
+						embed = discord.Embed(title="Volume data for {} on {} isn't available".format(marketPair, self.coinParser.exchanges[exchange].name), color=constants.colors["gray"])
+						embed.set_author(name="Couldn't get volume data", icon_url=firebase_storage.icon_bw)
+						try: await message.channel.send(embed=embed)
+						except Exception as e: await self.unknown_error(message, authorId, e)
+						return
+
+					try: coinThumbnail = self.coinGeckoConnection.coinGeckoIndex[base.lower()]["image"]
+					except: pass
+
+					price = [priceData[-1][4], priceData[0][1]] if len(priceData) < candleOffset else [priceData[-1][4], priceData[-candleOffset][1]]
+					volume = sum([candle[5] for candle in priceData if int(candle[0] / 1000) >= int(self.coinParser.exchanges[exchange].milliseconds() / 1000) - 86400])
+					if exchange == "bitmex" and symbol == "BTC/USD": self.coinParser.lastBitcoinPrice = price[0]
+					self.rateLimited["p"][exchange][symbol] = price
+					self.rateLimited["v"][exchange][symbol] = volume
+
+				if exchange in ["bitmex"]: volume /= price[0]
+				volumeUsd = int(volume * price[0])
+
+			embed = discord.Embed(title="{:,.4f} {}".format(volume, base), description="≈ {:,} {}".format(volumeUsd, quote.replace("USDT", "USD").replace("USDC", "USD").replace("TUSD", "USD").replace("USDS", "USD").replace("PAX", "USD")), color=constants.colors["orange"])
+			embed.set_author(name=marketPair, icon_url=coinThumbnail)
+			embed.set_footer(text="Volume on {}".format("CoinGecko" if exchange == "CoinGecko" else self.coinParser.exchanges[exchange].name))
+			try: sentMessages.append(await message.channel.send(embed=embed))
+			except Exception as e: await self.unknown_error(message, authorId, e)
+
+			if not useFallback: threading.Thread(target=self.clear_rate_limit_cache, args=(exchange, symbol, ["p", "v"], self.coinParser.exchanges[exchange].rateLimit / 1000)).start()
+
+			threading.Thread(target=self.fusion.command_stream, args=([message] + sentMessages,)).start()
+			return
+		except asyncio.CancelledError: pass
+		except Exception as e:
+			await self.unknown_error(message, authorId, e, report=True)
+			for id in constants.supportedExchanges["ohlcv"]:
+				self.rateLimited["p"][id] = {}
+				self.rateLimited["v"][id] = {}
+			exc_type, exc_obj, exc_tb = sys.exc_info()
+			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, raw))
+
+	async def depth(self, message, authorId, raw, mute=False):
+		try:
+			sentMessages = []
+			arguments = raw.split(" ")
+
+			tickerId, exchange, tickerParts, isAggregatedSymbol, isCryptoTicker = self.coinParser.process_ticker(arguments[0].upper(), "ohlcv")
+			if isAggregatedSymbol:
+				if not mute:
+					embed = discord.Embed(title="Aggregated tickers aren't supported with the `d` command", color=constants.colors["gray"])
+					embed.set_author(name="Aggregated tickers", icon_url=firebase_storage.icon_bw)
+					try: sentMessages.append(await message.channel.send(embed=embed))
+					except Exception as e: await self.unknown_error(message, authorId, e)
+				return (sentMessages, len(sentMessages))
+
+			outputMessage, tickerId, arguments = self.coinParser.process_coin_data_arguments(arguments, tickerId, exchange, command="v")
+			if outputMessage is not None:
+				if not mute:
+					embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
+					embed.set_author(name="Invalid argument", icon_url=firebase_storage.icon_bw)
+					try: sentMessages.append(await message.channel.send(embed=embed))
+					except Exception as e: await self.unknown_error(message, authorId, e)
+				return (sentMessages, len(sentMessages))
+			_, exchange = arguments
+
+			outputMessage, details = self.coinParser.find_market_pair(tickerId, exchange, "ohlcv")
+			if outputMessage is not None:
+				if not mute:
+					embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
+					embed.set_author(name="Ticker not found", icon_url=firebase_storage.icon_bw)
+					try: sentMessages.append(await message.channel.send(embed=embed))
+					except Exception as e: await self.unknown_error(message, authorId, e)
+				return (sentMessages, len(sentMessages))
+
+			symbol, base, quote, marketPair, exchange = details
+
+			try: await message.channel.trigger_typing()
+			except: pass
+
+			if symbol in self.rateLimited["d"][exchange]:
+				depthData = self.rateLimited["d"][exchange][symbol]
+			else:
+				try:
+					depthData = self.coinParser.exchanges[exchange].fetch_order_book(symbol)
+					self.rateLimited["d"][exchange][symbol] = depthData
+				except:
+					embed = discord.Embed(title="Orderbook data for {} isn't available".format(marketPair), color=constants.colors["gray"])
+					embed.set_author(name="Couldn't get orderbook data", icon_url=firebase_storage.icon_bw)
+					try: await message.channel.send(embed=embed)
+					except Exception as e: await self.unknown_error(message, authorId, e)
+					self.rateLimited["d"][exchange] = {}
+					return (sentMessages, len(sentMessages))
+
+			chartName = self.imageProcessor.request_depth_chart(authorId, depthData, self.coinParser.exchanges[exchange].markets[symbol]["precision"]["price"])
+
+			if chartName is None:
+				try:
+					embed = discord.Embed(title="Requested orderbook chart for `{}` is not available".format(marketPair), color=constants.colors["gray"])
+					embed.set_author(name="Chart not available", icon_url=firebase_storage.icon_bw)
+					chartMessage = await message.channel.send(embed=embed)
+					sentMessages.append(chartMessage)
+					try: await chartMessage.add_reaction("☑")
+					except: pass
+				except Exception as e: await self.unknown_error(message, authorId, e)
+				return (sentMessages, len(sentMessages))
+
+			try:
+				chartMessage = await message.channel.send(file=discord.File("charts/" + chartName, chartName))
+				sentMessages.append(chartMessage)
+				try: await chartMessage.add_reaction("☑")
+				except: pass
+			except Exception as e: await self.unknown_error(message, authorId, e)
+
+			threading.Thread(target=self.clear_rate_limit_cache, args=(exchange, symbol, ["d"], self.coinParser.exchanges[exchange].rateLimit / 1000)).start()
+
+			self.imageProcessor.clean_cache()
+
+			threading.Thread(target=self.fusion.command_stream, args=([message] + sentMessages,)).start()
+			return (sentMessages, len(sentMessages))
+		except asyncio.CancelledError: pass
+		except Exception as e:
+			await self.unknown_error(message, authorId, e, report=True)
+			for id in constants.supportedExchanges["ohlcv"]:
+				self.rateLimited["d"][id] = {}
+			exc_type, exc_obj, exc_tb = sys.exc_info()
+			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, raw))
+			return ([], 0)
+
+	async def heatmap(self, message, authorId, raw, mute=False):
+		try:
+			sentMessages = []
+			arguments = raw.split(" ")
+
+			outputMessage, arguments = self.imageProcessor.process_heatmap_arguments(arguments)
+			if outputMessage is not None:
+				if not mute:
+					embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
+					embed.set_author(name="Invalid argument", icon_url=firebase_storage.icon_bw)
+					try: sentMessages.append(await message.channel.send(embed=embed))
+					except Exception as e: await self.unknown_error(message, authorId, e)
+				if arguments is None:
+					return ([], 0)
+
+			timeframes, chart, type, side, category = arguments
+
+			try: await message.channel.trigger_typing()
+			except: pass
+
+			for timeframe in timeframes:
+				queueLength = [len(self.imageProcessor.screengrabLock[e]) for e in self.imageProcessor.screengrabLock]
+				driverInstance = queueLength.index(min(queueLength))
+
+				waitMessage = None
+				if len(self.imageProcessor.screengrabLock[driverInstance]) > 2:
+					embed = discord.Embed(title="One moment...", color=constants.colors["gray"])
+					try:  waitMessage = await message.channel.send(embed=embed)
+					except: pass
+					await asyncio.sleep(0.5)
+
+				try: await message.channel.trigger_typing()
+				except: pass
+
+				chartName = await self.imageProcessor.request_heatmap_chart(authorId, driverInstance, timeframe, chart, type, side, category)
+
+				if waitMessage is not None:
+					try: await waitMessage.delete()
+					except: pass
+
+				if chartName is None:
+					try:
+						embed = discord.Embed(title="Requested heat map is not available".format(tickerId), color=constants.colors["gray"])
+						embed.set_author(name="Heat map not available", icon_url=firebase_storage.icon_bw)
+						chartMessage = await message.channel.send(embed=embed)
 						sentMessages.append(chartMessage)
 						try: await chartMessage.add_reaction("☑")
 						except: pass
-					except: await self.unknown_error(message)
+					except Exception as e: await self.unknown_error(message, authorId, e)
 					return (sentMessages, len(sentMessages))
 
 				try:
@@ -1847,585 +2258,69 @@ class Alpha(discord.AutoShardedClient):
 					sentMessages.append(chartMessage)
 					try: await chartMessage.add_reaction("☑")
 					except: pass
-				except: await self.unknown_error(message)
+				except Exception as e: await self.unknown_error(message, authorId, e)
 
-				chartsFolder = "./charts/"
-				files = sorted(os.listdir(chartsFolder))
-				numOfFiles = len([chartName for chartName in files if ".png" in chartName and os.path.isfile(os.path.join(chartsFolder, chartName))])
-				if numOfFiles > 100:
-					for i in range(numOfFiles - 100):
-						os.remove(os.path.join(chartsFolder, files[i]))
+				self.imageProcessor.clean_cache()
 
+			threading.Thread(target=self.fusion.command_stream, args=([message] + sentMessages,)).start()
 			return (sentMessages, len(sentMessages))
 		except asyncio.CancelledError: return ([], 0)
 		except Exception as e:
-			await self.unknown_error(message, report=True)
+			await self.unknown_error(message, authorId, e, report=True)
 			exc_type, exc_obj, exc_tb = sys.exc_info()
 			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
 			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, raw))
 			return ([], 0)
 
-	async def price(self, message, raw, isPremium, mute=False):
-		try:
-			arguments = raw.split(" ")
-
-			tickerId, exchange, tickerParts, isAggregatedSymbol = self.coinParser.process_ticker(arguments[0].upper(), self.coinParser.coins["ohlcv"])
-			if isAggregatedSymbol:
-				try: await message.channel.send("Aggregated tickers aren't supported with the **alert** command")
-				except: await self.unknown_error(message)
-				return
-
-			outputMessage, tickerId, arguments = self.coinParser.process_coin_data_arguments(arguments, tickerId, exchange, hasActions=True, command="p")
-			if outputMessage is not None:
-				if not mute:
-					try: await message.channel.send(outputMessage)
-					except: await self.unknown_error(message)
-				return
-			action, exchange = arguments
-
-			try: await message.channel.trigger_typing()
-			except: pass
-
-			if action == "funding": await self.bitmex_funding(message, tickerId, mute)
-			elif action == "futures": await self.bitmex_futures(message, tickerId, mute)
-			elif action == "oi": await self.bitmex_open_interest(message, tickerId, isPremium, mute)
-			elif action == "premiums": await self.bitcoin_premiums(message, tickerId, mute)
-			elif action == "ls": await self.long_short_ratio(message, tickerId, False, mute)
-			elif action == "sl": await self.long_short_ratio(message, tickerId, True, mute)
-			else:
-				outputMessage, details = self.coinParser.find_trading_pair_id(tickerId, exchange, "ohlcv", "fetchOHLCV")
-				if outputMessage is not None:
-					if outputMessage == "Ticker **{}** was not found".format(tickerId):
-						fallback = tickerId[:-3] if tickerId.endswith(("BTC", "ETH", "USD")) else tickerId
-						if fallback in self.coinGeckoLink.coingeckoDataset:
-							try:
-								data = self.coinGeckoLink.coingecko.get_coin_by_id(id=self.coinGeckoLink.coingeckoDataset[fallback.lower()], localization="false", tickers=False, market_data=True, community_data=False, developer_data=False)
-							except:
-								await self.unknown_error(message)
-								return
-
-							btcPrice = "${:,.8f}".format(data["market_data"]["current_price"]["btc"])
-							usdPrice = "${:,.2f}".format(data["market_data"]["current_price"]["usd"])
-							change24h = ""
-							if "usd" in data["market_data"]["price_change_percentage_24h_in_currency"]:
-								change24h = " *{:+.2f} %*".format(data["market_data"]["price_change_percentage_24h_in_currency"]["btc"])
-							try: await message.channel.send("{} (CoinGecko fallback): **{} BTC** (${}) {}".format(tickerId, btcPrice, usdPrice, change24h))
-							except: await self.unknown_error(message)
-						else:
-							try: await message.channel.send("**{}** not found".format(tickerId))
-							except: await self.unknown_error(message)
-					elif not mute:
-						try: await message.channel.send(outputMessage)
-						except: await self.unknown_error(message)
-					return
-
-				symbol, exchange = details
-				base = self.coinParser.exchanges[exchange].markets[symbol]["base"]
-				quote = self.coinParser.exchanges[exchange].markets[symbol]["quote"]
-				coinPair = self.coinParser.exchanges[exchange].markets[symbol]["id"].replace("_", "").replace("/", "").replace("-", "").upper()
-
-				if tickerId in self.rateLimited["p"][exchange] and tickerId in self.rateLimited["v"][exchange]:
-					price = self.rateLimited["p"][exchange][tickerId]
-					volume = self.rateLimited["v"][exchange][tickerId]
-				else:
-					try:
-						rawData = self.coinParser.exchanges[exchange].fetch_ohlcv(
-							symbol,
-							timeframe="1d",
-							since=(self.coinParser.exchanges[exchange].milliseconds() - 24 * 60 * 60 * 5 * 1000)
-						)
-						price = (rawData[-1][4], rawData[-2][4])
-						volume = sum([candle[5] for candle in rawData])
-						if exchange == "bitmex" and symbol == "BTC/USD": self.coinParser.lastBitcoinPrice = price[0]
-						self.rateLimited["p"][exchange][tickerId] = price
-						self.rateLimited["v"][exchange][tickerId] = volume
-					except:
-						try: await message.channel.send("Couldn't get price data")
-						except: await self.unknown_error(message)
-						self.rateLimited["p"][exchange] = {}
-						self.rateLimited["v"][exchange] = {}
-						return
-
-				percentChange = price[0] / price[1] * 100 - 100
-				priceText = Utils.format_price(self.coinParser.exchanges[exchange], symbol, price[0])
-				usdConversion = " (${:,.2f})".format(price[0] * self.coinParser.lastBitcoinPrice) if quote == "BTC" else ""
-
-				try: await message.channel.send("{} ({}): **{} {}**{} *{:+.2f} %*".format(coinPair, self.coinParser.exchanges[exchange].name, priceText, quote.replace("USDT", "USD").replace("USDC", "USD").replace("TUSD", "USD"), usdConversion, percentChange))
-				except: await self.unknown_error(message)
-
-				await asyncio.sleep(self.coinParser.exchanges[exchange].rateLimit / 1000)
-				self.rateLimited["p"][exchange].pop(tickerId, None)
-				self.rateLimited["v"][exchange].pop(tickerId, None)
-				return
-		except asyncio.CancelledError: pass
-		except Exception as e:
-			await self.unknown_error(message, report=True)
-			for id in constants.supportedExchanges["ohlcv"]:
-				self.rateLimited["p"][id] = {}
-			exc_type, exc_obj, exc_tb = sys.exc_info()
-			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, raw))
-
-	async def bitmex_funding(self, message, tickerId, mute=False):
-		tickerId = tickerId.replace("BTC", "XBT").replace("USDT", "USD")
-		r = requests.get("https://www.bitmex.com/api/v1/instrument?symbol={}".format(tickerId)).json()
-		if len(r) != 0:
-			fundingDate = datetime.datetime.strptime(r[0]["fundingTimestamp"], "%Y-%m-%dT%H:%M:00.000Z")
-			indicativeFundingTimestamp = datetime.datetime.timestamp(fundingDate) + 28800
-			indicativeFundingDate = datetime.datetime.utcfromtimestamp(indicativeFundingTimestamp)
-			deltaFunding = pytz.utc.localize(fundingDate) - datetime.datetime.now().astimezone(pytz.utc)
-			deltaIndicative = pytz.utc.localize(indicativeFundingDate) - datetime.datetime.now().astimezone(pytz.utc)
-
-			hours1, seconds1 = divmod(deltaFunding.days * 86400 + deltaFunding.seconds, 3600)
-			minutes1 = int(seconds1 / 60)
-			hoursFunding = "{:d} {} ".format(hours1, "hours" if hours1 > 1 else "hour") if hours1 > 0 else ""
-			minutesFunding = "{:d} {}".format(minutes1 if hours1 > 0 or minutes1 > 0 else seconds1, "{}".format("minute" if minutes1 == 1 else "minutes") if hours1 > 0 or minutes1 > 0 else ("second" if seconds1 == 1 else "seconds"))
-			deltaFundingText = "{}{}".format(hoursFunding, minutesFunding)
-
-			hours2, seconds2 = divmod(deltaIndicative.days * 86400 + deltaIndicative.seconds, 3600)
-			minutes2 = int(seconds2 / 60)
-			hoursIndicative = "{:d} {} ".format(hours2, "hours" if hours2 > 1 else "hour") if hours2 > 0 else ""
-			minutesIndicative = "{:d} {}".format(minutes2 if hours2 > 0 or minutes2 > 0 else seconds2, "{}".format("minute" if minutes2 == 1 else "minutes") if hours2 > 0 or minutes2 > 0 else ("second" if seconds2 == 1 else "seconds"))
-			deltaIndicativeText = "{}{}".format(hoursIndicative, minutesIndicative)
-
-			try: await message.channel.send("__{} (BitMEX):__\nFunding Rate: **{:+.4f} %** *(in {})*\nPredicted Rate: **{:+.4f} %** *(in {})*".format(tickerId, r[0]["fundingRate"] * 100, deltaFundingText, r[0]["indicativeFundingRate"] * 100, deltaIndicativeText))
-			except: await self.unknown_error(message)
-		else:
-			try: await message.channel.send("**{}** not found".format(tickerId))
-			except: await self.unknown_error(message)
-
-	async def bitmex_futures(self, message, tickerId, mute=False):
-		price = [(0, 0), (0, 0)]
-		id = "bitmex"
-		jobs = ["XBTZ19", "XBTU19"]
-		for i in range(len(jobs)):
-			tickerId = jobs[i]
-			if tickerId in self.rateLimited["p"][id]:
-				price = self.rateLimited["p"][id][tickerId]
-			else:
-				try:
-					rawData = self.coinParser.exchanges[id].fetch_ohlcv(
-						tickerId,
-						timeframe="1d",
-						since=(self.coinParser.exchanges[id].milliseconds() - 24 * 60 * 60 * 5 * 1000)
-					)
-					price[i] = (rawData[-1][4], rawData[-2][4])
-					self.rateLimited["p"][id][tickerId] = price[i]
-					self.rateLimited["v"][id][tickerId] = rawData[-1][5]
-				except:
-					try: await message.channel.send("Couldn't get price data")
-					except: await self.unknown_error(message)
-					self.rateLimited["p"][id] = {}
-					self.rateLimited["v"][id] = {}
-					return
-
-		try: await message.channel.send("{} ({}): **{:.2f} USD** *{:+.2f} %*\n{} ({}): **{:.2f} USD** *{:+.2f} %*".format(jobs[0], id.title(), price[0][0], price[0][0] / price[0][1] * 100 - 100, jobs[1], id.title(), price[1][0], price[1][0] / price[1][1] * 100 - 100))
-		except: await self.unknown_error(message)
-
-		for i in range(len(jobs)):
-			tickerId = jobs[i]
-			await asyncio.sleep(self.coinParser.exchanges[id].rateLimit / 1000 * 2)
-			self.rateLimited["p"][id].pop(tickerId, None)
-			self.rateLimited["v"][id].pop(tickerId, None)
-
-	async def bitcoin_premiums(self, message, tickerId, mute=False):
-		price = [(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)]
-		jobs = ["bitmex", "bitfinex2", "coinbasepro", "binance", "huobipro"]
-		prem = {
-			"bitfinex2": "*no data*",
-			"coinbasepro": "*no data*",
-			"binance": "*no data*",
-			"huobipro": "*no data*"
-		}
-		for i in range(len(jobs)):
-			id = jobs[i]
-			if tickerId in self.rateLimited["p"][id]:
-				price[i] = self.rateLimited["p"][id][tickerId]
-			else:
-				try:
-					rawData = self.coinParser.exchanges[id].fetch_ohlcv(
-						"BTC/USD" if "BTC/USD" in self.coinParser.exchanges[id].symbols else "BTC/USDT",
-						timeframe="1d",
-						since=(self.coinParser.exchanges[id].milliseconds() - 24 * 60 * 60 * 5 * 1000)
-					)
-					price[i] = (rawData[-1][4], rawData[-2][4])
-					self.rateLimited["p"][id][tickerId] = price[i]
-					self.rateLimited["v"][id][tickerId] = rawData[-1][5]
-				except:
-					try: await message.channel.send("Couldn't get price data")
-					except: await self.unknown_error(message)
-					self.rateLimited["p"][id] = {}
-					self.rateLimited["v"][id] = {}
-					continue
-			if id != "bitmex": prem[id] = "**{:+.2f} USD**".format(price[0][0] - price[i][0])
-
-		try: await message.channel.send("__XBTUSD (BitMEX): **{:.1f} USD** *{:+.2f} %*__\nBTCUSD (Bitfinex): {}\nBTCUSD (Coinbase Pro): {}\nBTCUSDT (Binance): {}\nBTCUSD (Huobi Pro): {}".format(price[0][0], price[0][0] / price[0][1] * 100 - 100, prem["bitfinex2"], prem["coinbasepro"], prem["binance"], prem["huobipro"]))
-		except: await self.unknown_error(message)
-
-		for i in range(len(jobs)):
-			id = jobs[i]
-			await asyncio.sleep(self.coinParser.exchanges[id].rateLimit / 1000 * 2)
-			self.rateLimited["p"][id].pop(tickerId, None)
-			self.rateLimited["v"][id].pop(tickerId, None)
-
-	async def long_short_ratio(self, message, tickerId, reverse=False, mute=False):
-		if reverse:
-			coin = tickerId
-			tickerId = "{}SHORTS/({}LONGS+{}SHORTS)".format(tickerId, tickerId, tickerId)
-			if tickerId in self.rateLimited["p"]["bitfinex2"]:
-				ratio = self.rateLimited["p"]["bitfinex2"][tickerId]
-			else:
-				try:
-					longs = self.coinParser.exchanges["bitfinex2"].publicGetStats1KeySizeSymbolLongLast({"key": "pos.size", "size": "1m", "symbol": "t{}".format(coin.replace("USDT", "USD")), "side": "short", "section": "last"})
-					shorts = self.coinParser.exchanges["bitfinex2"].publicGetStats1KeySizeSymbolShortLast({"key": "pos.size", "size": "1m", "symbol": "t{}".format(coin.replace("USDT", "USD")), "side": "short", "section": "last"})
-					ratio = shorts[1] / (longs[1] + shorts[1]) * 100
-					self.rateLimited["p"]["bitfinex2"][tickerId] = ratio
-				except:
-					await self.unknown_error(message)
-					self.rateLimited["p"]["bitfinex2"] = {}
-					return
-
-			try: await message.channel.send("{} (Bitfinex) shorts/longs ratio: **{:.1f} % / {:.1f} %**".format(coin, ratio, 100 - ratio))
-			except: await self.unknown_error(message)
-
-			await asyncio.sleep(self.coinParser.exchanges["bitfinex2"].rateLimit / 1000 * 4)
-			self.rateLimited["p"]["bitfinex2"].pop(tickerId, None)
-		else:
-			coin = tickerId
-			tickerId = "{}LONGS/({}LONGS+{}SHORTS)".format(tickerId, tickerId, tickerId)
-			if tickerId in self.rateLimited["p"]["bitfinex2"]:
-				ratio = self.rateLimited["p"]["bitfinex2"][tickerId]
-			else:
-				try:
-					longs = self.coinParser.exchanges["bitfinex2"].publicGetStats1KeySizeSymbolLongLast({"key": "pos.size", "size": "1m", "symbol": "t{}".format(coin.replace("USDT", "USD")), "side": "long", "section": "last"})
-					shorts = self.coinParser.exchanges["bitfinex2"].publicGetStats1KeySizeSymbolShortLast({"key": "pos.size", "size": "1m", "symbol": "t{}".format(coin.replace("USDT", "USD")), "side": "long", "section": "last"})
-					ratio = longs[1] / (longs[1] + shorts[1]) * 100
-					self.rateLimited["p"]["bitfinex2"][tickerId] = ratio
-				except:
-					await self.unknown_error(message)
-					self.rateLimited["p"]["bitfinex2"] = {}
-					return
-
-			try: await message.channel.send("{} (Bitfinex) longs/shorts ratio: **{:.1f} % / {:.1f} %**".format(coin, ratio, 100 - ratio))
-			except: await self.unknown_error(message)
-
-			await asyncio.sleep(self.coinParser.exchanges["bitfinex2"].rateLimit / 1000 * 4)
-			self.rateLimited["p"]["bitfinex2"].pop(tickerId, None)
-
-	async def volume(self, message, raw, mute=False):
-		try:
-			arguments = raw.split(" ")
-
-			tickerId, exchange, tickerParts, isAggregatedSymbol = self.coinParser.process_ticker(arguments[0].upper(), self.coinParser.coins["ohlcv"])
-			if isAggregatedSymbol:
-				try: await message.channel.send("Aggregated tickers aren't supported with the **alert** command")
-				except: await self.unknown_error(message)
-				return
-
-			outputMessage, tickerId, arguments = self.coinParser.process_coin_data_arguments(arguments, tickerId, exchange, command="v")
-			if outputMessage is not None:
-				if not mute:
-					try: await message.channel.send(outputMessage)
-					except: await self.unknown_error(message)
-				return
-			_, exchange = arguments
-
-			try: await message.channel.trigger_typing()
-			except: pass
-
-			outputMessage, details = self.coinParser.find_trading_pair_id(tickerId, exchange, "ohlcv", "fetchOHLCV")
-			if outputMessage is not None:
-				if not mute:
-					try: await message.channel.send(outputMessage)
-					except: await self.unknown_error(message)
-				return
-
-			symbol, exchange = details
-			base = self.coinParser.exchanges[exchange].markets[symbol]["base"]
-			quote = self.coinParser.exchanges[exchange].markets[symbol]["quote"]
-			coinPair = self.coinParser.exchanges[exchange].markets[symbol]["id"].replace("_", "").replace("/", "").replace("-", "").upper()
-
-			if tickerId in self.rateLimited["p"][exchange] and tickerId in self.rateLimited["v"][exchange]:
-				price = self.rateLimited["p"][exchange][tickerId]
-				volume = self.rateLimited["v"][exchange][tickerId]
-			else:
-				try:
-					rawData = self.coinParser.exchanges[exchange].fetch_ohlcv(
-						symbol,
-						timeframe="5m",
-						since=(self.coinParser.exchanges[exchange].milliseconds() - 24 * 60 * 60 * 1 * 1000)
-					)
-					price = (rawData[-1][4], rawData[-2][4])
-					volume = sum([candle[5] for candle in rawData])
-					if exchange == "bitmex" and symbol == "BTC/USD": self.coinParser.lastBitcoinPrice = price[0]
-					self.rateLimited["p"][exchange][tickerId] = price
-					self.rateLimited["v"][exchange][tickerId] = volume
-				except:
-					try: await message.channel.send("Couldn't get price data")
-					except: await self.unknown_error(message)
-					self.rateLimited["p"][exchange] = {}
-					self.rateLimited["v"][exchange] = {}
-					return
-
-			try: await message.channel.send("{} ({}): **{:,.1f} {}** ({:,} {})".format(coinPair, self.coinParser.exchanges[exchange].name, volume, base, int(volume * price[0]), quote.replace("USDT", "USD").replace("USDC", "USD").replace("TUSD", "USD").replace("USDS", "USD").replace("PAX", "USD")))
-			except: await self.unknown_error(message)
-
-			await asyncio.sleep(self.coinParser.exchanges[exchange].rateLimit / 1000)
-			self.rateLimited["p"][exchange].pop(tickerId, None)
-			self.rateLimited["v"][exchange].pop(tickerId, None)
-			return
-		except asyncio.CancelledError: pass
-		except Exception as e:
-			await self.unknown_error(message, report=True)
-			for id in constants.supportedExchanges["ohlcv"]:
-				self.rateLimited["v"][id] = {}
-			exc_type, exc_obj, exc_tb = sys.exc_info()
-			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, raw))
-
-	async def depth(self, message, raw, mute=False):
-		try:
-			arguments = raw.split(" ")
-
-			tickerId, exchange, tickerParts, isAggregatedSymbol = self.coinParser.process_ticker(arguments[0].upper(), self.coinParser.coins["ohlcv"])
-			if isAggregatedSymbol:
-				try: await message.channel.send("Aggregated tickers aren't supported with the **alert** command")
-				except: await self.unknown_error(message)
-				return
-
-			outputMessage, tickerId, arguments = self.coinParser.process_coin_data_arguments(arguments, tickerId, exchange, command="v")
-			if outputMessage is not None:
-				if not mute:
-					try: await message.channel.send(outputMessage)
-					except: await self.unknown_error(message)
-				return
-			_, exchange = arguments
-
-			try: await message.channel.trigger_typing()
-			except: pass
-
-			outputMessage, details = self.coinParser.find_trading_pair_id(tickerId, exchange, "ohlcv", "fetchOHLCV")
-			if outputMessage is not None:
-				if not mute:
-					try: await message.channel.send(outputMessage)
-					except: await self.unknown_error(message)
-				return
-
-			symbol, exchange = details
-			base = self.coinParser.exchanges[exchange].markets[symbol]["base"] if exchange != "bitmex" else (self.coinParser.exchanges[exchange].markets[symbol]["info"]["positionCurrency"] if symbol != "ETH/USD" else "cont.")
-			quote = self.coinParser.exchanges[exchange].markets[symbol]["quote"]
-			coinPair = self.coinParser.exchanges[exchange].markets[symbol]["id"].replace("_", "").replace("/", "").replace("-", "").upper()
-
-			if tickerId in self.rateLimited["d"][exchange]:
-				rawData = self.rateLimited["d"][exchange][tickerId]
-			else:
-				try:
-					rawData = self.coinParser.exchanges[exchange].fetch_order_book(symbol)
-					self.rateLimited["d"][exchange][tickerId] = rawData
-				except:
-					try: await message.channel.send("Couldn't get depth data")
-					except: await self.unknown_error(message)
-					self.rateLimited["d"][exchange] = {}
-					return
-
-			tempAllAsks = [e[1] for e in rawData["asks"]]
-			tempAllBids = [e[1] for e in rawData["bids"]]
-
-			if len(tempAllAsks) == 0 or len(tempAllBids) == 0:
-				try: await message.channel.send("Depth data for **{}** is not available".format(coinPair))
-				except: await self.unknown_error(message)
-				self.rateLimited["d"][exchange] = {}
-				return
-
-			averageAskQty = sum(tempAllAsks) / len(tempAllAsks)
-			averageBidQty = sum(tempAllBids) / len(tempAllBids)
-
-			rawAsks = []
-			wallSum = 0
-			previousPrice = 0
-			for e in rawData["asks"]:
-				if wallSum < averageAskQty:
-					wallSum += e[1]
-				else:
-					rawAsks.append((previousPrice, wallSum))
-					wallSum = 0
-				previousPrice = e[0]
-
-			rawBids = []
-			wallSum = 0
-			previousPrice = 0
-			for e in rawData["bids"]:
-				if wallSum < averageBidQty:
-					wallSum += e[1]
-				else:
-					rawBids.append((e[0], wallSum))
-					wallSum = 0
-				previousPrice = e[0]
-
-			orderedAsks = sorted([e[1] for e in rawAsks])
-			askPrices = sorted([e[0] for e in rawAsks])
-			orderedBids = sorted([e[1] for e in rawBids])
-			bidPrices = sorted([e[0] for e in rawBids])
-
-			maxQtyLen = max(
-				len("{:,} {}".format(round(orderedAsks[-1], 1), quote)),
-				len("{:,} {}".format(round(orderedBids[-1], 1), quote))
-			)
-			maxPriceLen = max(len("{:.4f}".format(askPrices[-1])), len("{:.4f}".format(bidPrices[-1])))
-
-			asks = "{} ({}) asks: ```diff".format(coinPair, self.coinParser.exchanges[exchange].name)
-			for e in reversed(rawAsks):
-				if e[1] in orderedAsks[-(20 if len(orderedAsks) >= 20 else len(orderedAsks)):]:
-					wall = "{:,} {}".format(round(e[1], 1), base)
-					wallPrice = "{:.4f}".format(e[0])
-					wallSpaces = " " * (maxQtyLen - len(wall))
-					priceSpaces = " " * (maxPriceLen - len(wallPrice))
-					asks += "\n- {}{} @ {}{} {}".format(wallSpaces, wall, priceSpaces, wallPrice if quote in ["USD", "USDT", "TUSD", "USDC"] else "{:.8f}".format(e[0]), quote)
-			asks += "```"
-
-			bids = "{} ({}) bids: ```diff".format(coinPair, self.coinParser.exchanges[exchange].name)
-			for e in rawBids:
-				if e[1] in orderedBids[-(20 if len(orderedBids) >= 20 else len(orderedBids)):]:
-					wall = "{:,} {}".format(round(e[1], 1), base)
-					wallPrice = "{:.4f}".format(e[0])
-					wallSpaces = " " * (maxQtyLen - len(wall))
-					priceSpaces = " " * (maxPriceLen - len(wallPrice))
-					bids += "\n+ {}{} @ {}{} {}".format(wallSpaces, wall, priceSpaces, wallPrice if quote in ["USD", "USDT", "TUSD", "USDC"] else "{:.8f}".format(e[0]), quote)
-			bids += "```"
-
-			try:
-				await message.channel.send(asks)
-				await message.channel.send(bids)
-			except: await self.unknown_error(message)
-
-			await asyncio.sleep(self.coinParser.exchanges[exchange].rateLimit / 1000)
-			self.rateLimited["d"][exchange].pop(tickerId, None)
-			self.rateLimited["d"][exchange].pop(tickerId, None)
-			return
-		except asyncio.CancelledError: pass
-		except Exception as e:
-			await self.unknown_error(message, report=True)
-			for id in constants.supportedExchanges["ohlcv"]:
-				self.rateLimited["d"][id] = {}
-			exc_type, exc_obj, exc_tb = sys.exc_info()
-			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, raw))
-
-	async def heatmap(self, message, raw, mute=False):
+	async def mcap(self, message, authorId, raw, mute=False):
 		try:
 			sentMessages = []
-			with message.channel.typing():
-				arguments = raw.split(" ")
-
-				outputMessage, arguments = self.imageProcessor.process_heatmap_arguments(arguments)
-				if outputMessage is not None:
-					if not mute:
-						try: await message.channel.send(outputMessage)
-						except: await self.unknown_error(message)
-					if arguments is None:
-						return ([], 0)
-
-				timeframes, chart, type, side, category = arguments
-
-				for timeframe in timeframes:
-					queueLength = [len(self.imageProcessor.screengrabLock[e]) for e in self.imageProcessor.screengrabLock]
-					driverInstance = queueLength.index(min(queueLength))
-
-					waitMessage = None
-					if len(self.imageProcessor.screengrabLock[driverInstance]) > 2:
-						try: waitMessage = await message.channel.send("One moment...")
-						except: pass
-						await asyncio.sleep(0.5)
-
-					chartName = await self.imageProcessor.request_heatmap_chart(message.author.id, driverInstance, timeframe, chart, type, side, category)
-
-					if waitMessage is not None:
-						try: await waitMessage.delete()
-						except: pass
-					if chartName is None:
-						try:
-							chartMessage = await message.channel.send("Couldn't get the requested heat map")
-							sentMessages.append(chartMessage)
-							try: await chartMessage.add_reaction("☑")
-							except: pass
-						except: await self.unknown_error(message)
-						return (sentMessages, len(sentMessages))
-
-					try:
-						chartMessage = await message.channel.send(file=discord.File("charts/" + chartName, chartName))
-						sentMessages.append(chartMessage)
-						try: await chartMessage.add_reaction("☑")
-						except: pass
-					except: await self.unknown_error(message)
-
-					chartsFolder = "./charts/"
-					files = sorted(os.listdir(chartsFolder))
-					numOfFiles = len([chartName for chartName in files if ".png" in chartName and os.path.isfile(os.path.join(chartsFolder, chartName))])
-					if numOfFiles > 100:
-						for i in range(numOfFiles - 100):
-							os.remove(os.path.join(chartsFolder, files[i]))
-
-			return (sentMessages, len(sentMessages))
-		except asyncio.CancelledError: return ([], 0)
-		except Exception as e:
-			await self.unknown_error(message, report=True)
-			exc_type, exc_obj, exc_tb = sys.exc_info()
-			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, raw))
-			return ([], 0)
-
-	async def mcap(self, message, raw, mute=False):
-		try:
 			arguments = raw.split(" ")
 
-			tickerId = arguments[0].upper()
+			tickerId, exchange, tickerParts, isAggregatedSymbol, isCryptoTicker = self.coinParser.process_ticker(arguments[0].upper(), "ohlcv", defaultQuote="")
+			if isAggregatedSymbol:
+				if not mute:
+					embed = discord.Embed(title="Aggregated tickers aren't supported with the `mcap` command", color=constants.colors["gray"])
+					embed.set_author(name="Aggregated tickers", icon_url=firebase_storage.icon_bw)
+					try: await message.channel.send(embed=embed)
+					except Exception as e: await self.unknown_error(message, authorId, e)
+				return
+
 			conversion = ""
-			if len(arguments) == 2:
-				conversion = arguments[1]
-			elif len(arguments) > 2:
+			if len(arguments) == 2: conversion = arguments[1].upper()
+			elif len(arguments) > 2: return
+
+			outputMessage, details = self.coinParser.find_mcap_pair(tickerId, conversion, exchange, "ohlcv")
+			if outputMessage is not None:
+				if not mute:
+					try: int(base)
+					except:
+						embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
+						embed.set_author(name="Ticker not found", icon_url=firebase_storage.icon_bw)
+						try: sentMessages.append(await message.channel.send(embed=embed))
+						except Exception as e: await self.unknown_error(message, authorId, e)
 				return
+			base, quote = details
 
-			if tickerId.startswith("$"):
-				tickerId = tickerId.replace("$", "") + "USD"
+			if base.lower() in self.coinGeckoConnection.coinGeckoIndex:
+				try: await message.channel.trigger_typing()
+				except: pass
 
-			if len(tickerId.replace("-", "+").replace("/", "+").replace("*", "+").split("+")[:-1]) > 1:
-				try: await message.channel.send("Aggregated tickers aren't supported with the **mcap** command")
-				except: await self.unknown_error(message)
-				return
-
-			if tickerId in ["XBT", "XBTUSD"]:
-				tickerId = "BTC"
-			elif tickerId.endswith(("Z19", "U19")):
-				tickerId = tickerId.replace("Z19", "USD").replace("U19", "USD").replace("XBT", "BTC")
-
-			try: await message.channel.trigger_typing()
-			except: pass
-
-			for id in self.coinParser.exchanges:
-				if conversion != "": break
-				if self.coinParser.exchanges[id].symbols is not None:
-					for symbol in self.coinParser.exchanges[id].symbols:
-						pair = symbol.split("/")
-						pair[-1] = pair[-1].replace("USDT", "USD").replace("USDC", "USD").replace("TUSD", "USD").replace("USDS", "USD").replace("PAX", "USD")
-						if tickerId.startswith(pair[0]) and tickerId.replace(pair[0], "").endswith(pair[-1]):
-							tickerId = pair[0]
-							conversion = pair[-1].lower()
-							break
-
-			if tickerId.lower() in self.coinGeckoLink.coingeckoDataset:
 				try:
-					data = self.coinGeckoLink.coingecko.get_coin_by_id(id=self.coinGeckoLink.coingeckoDataset[tickerId.lower()], localization="false", tickers=False, market_data=True, community_data=True, developer_data=True)
+					data = self.coinGeckoConnection.coingecko.get_coin_by_id(id=self.coinGeckoConnection.coinGeckoIndex[base.lower()]["id"], localization="false", tickers=False, market_data=True, community_data=True, developer_data=True)
 				except:
-					await self.unknown_error(message)
+					await self.unknown_error(message, authorId, e)
 					return
 
-				embed = discord.Embed(title="{} ({})".format(data["name"], tickerId), description="Ranked #{} by market cap".format(data["market_data"]["market_cap_rank"]), color=0xD949B7)
+				embed = discord.Embed(title="{} ({})".format(data["name"], base), description="Ranked #{} by market cap".format(data["market_data"]["market_cap_rank"]), color=constants.colors["lime"])
 				embed.set_thumbnail(url=data["image"]["large"])
 
-				if conversion == "": conversion = "usd"
-				if conversion not in data["market_data"]["current_price"]:
-					try: await message.channel.send("Conversion to **{}** is not available".format(conversion.upper()))
-					except: await self.unknown_error(message)
+				if quote == "": quote = "USD"
+				if quote.lower() not in data["market_data"]["current_price"]:
+					embed = discord.Embed(title="Conversion to {} is not available".format(tickerId), color=constants.colors["gray"])
+					embed.set_author(name="Conversion not available", icon_url=firebase_storage.icon_bw)
+					try: sentMessages.append(await message.channel.send(embed=embed))
+					except: pass
 					return
 
 				usdPrice = ("${:,.%df}" % Utils.add_decimal_zeros(data["market_data"]["current_price"]["usd"])).format(data["market_data"]["current_price"]["usd"])
@@ -2435,16 +2330,16 @@ class Alpha(discord.AutoShardedClient):
 				bnbPrice = ""
 				xrpPrice = ""
 				basePrice = ""
-				if tickerId != "BTC" and "btc" in data["market_data"]["current_price"]:
+				if base != "BTC" and "btc" in data["market_data"]["current_price"]:
 					btcPrice = ("\n₿{:,.%df}" % Utils.add_decimal_zeros(data["market_data"]["current_price"]["btc"])).format(data["market_data"]["current_price"]["btc"])
-				if tickerId != "ETH" and "eth" in data["market_data"]["current_price"]:
+				if base != "ETH" and "eth" in data["market_data"]["current_price"]:
 					ethPrice = ("\nΞ{:,.%df}" % Utils.add_decimal_zeros(data["market_data"]["current_price"]["eth"])).format(data["market_data"]["current_price"]["eth"])
-				if tickerId != "BNB" and "bnb" in data["market_data"]["current_price"]:
+				if base != "BNB" and "bnb" in data["market_data"]["current_price"]:
 					bnbPrice = ("\n{:,.%df} BNB" % Utils.add_decimal_zeros(data["market_data"]["current_price"]["bnb"])).format(data["market_data"]["current_price"]["bnb"])
-				if tickerId != "XRP" and "xrp" in data["market_data"]["current_price"]:
+				if base != "XRP" and "xrp" in data["market_data"]["current_price"]:
 					xrpPrice = ("\n{:,.%df} XRP" % Utils.add_decimal_zeros(data["market_data"]["current_price"]["xrp"])).format(data["market_data"]["current_price"]["xrp"])
-				if conversion in data["market_data"]["current_price"] and conversion.upper() not in ["USD", "EUR", "BTC", "ETH", "BNB", "XRP"]:
-					basePrice = ("\n{:,.%df} {}" % Utils.add_decimal_zeros(data["market_data"]["current_price"][conversion])).format(data["market_data"]["current_price"][conversion], conversion.upper())
+				if quote.lower() in data["market_data"]["current_price"] and quote not in ["USD", "EUR", "BTC", "ETH", "BNB", "XRP"]:
+					basePrice = ("\n{:,.%df} {}" % Utils.add_decimal_zeros(data["market_data"]["current_price"][quote.lower()])).format(data["market_data"]["current_price"][quote.lower()], quote)
 				embed.add_field(name="Price", value=(usdPrice + eurPrice + btcPrice + ethPrice + bnbPrice + xrpPrice + basePrice), inline=True)
 
 				change1h = ""
@@ -2452,16 +2347,16 @@ class Alpha(discord.AutoShardedClient):
 				change7d = ""
 				change30d = ""
 				change1y = ""
-				if conversion in data["market_data"]["price_change_percentage_1h_in_currency"]:
-					change1h = "Past hour: *{:+,.2f} %*".format(data["market_data"]["price_change_percentage_1h_in_currency"][conversion])
-				if conversion in data["market_data"]["price_change_percentage_24h_in_currency"]:
-					change24h = "\nPast day: *{:+,.2f} %*".format(data["market_data"]["price_change_percentage_24h_in_currency"][conversion])
-				if conversion in data["market_data"]["price_change_percentage_7d_in_currency"]:
-					change7d = "\nPast week: *{:+,.2f} %*".format(data["market_data"]["price_change_percentage_7d_in_currency"][conversion])
-				if conversion in data["market_data"]["price_change_percentage_30d_in_currency"]:
-					change30d = "\nPast month: *{:+,.2f} %*".format(data["market_data"]["price_change_percentage_30d_in_currency"][conversion])
-				if conversion in data["market_data"]["price_change_percentage_1y_in_currency"]:
-					change1y = "\nPast year: *{:+,.2f} %*".format(data["market_data"]["price_change_percentage_1y_in_currency"][conversion])
+				if quote.lower() in data["market_data"]["price_change_percentage_1h_in_currency"]:
+					change1h = "Past hour: *{:+,.2f} %*".format(data["market_data"]["price_change_percentage_1h_in_currency"][quote.lower()])
+				if quote.lower() in data["market_data"]["price_change_percentage_24h_in_currency"]:
+					change24h = "\nPast day: *{:+,.2f} %*".format(data["market_data"]["price_change_percentage_24h_in_currency"][quote.lower()])
+				if quote.lower() in data["market_data"]["price_change_percentage_7d_in_currency"]:
+					change7d = "\nPast week: *{:+,.2f} %*".format(data["market_data"]["price_change_percentage_7d_in_currency"][quote.lower()])
+				if quote.lower() in data["market_data"]["price_change_percentage_30d_in_currency"]:
+					change30d = "\nPast month: *{:+,.2f} %*".format(data["market_data"]["price_change_percentage_30d_in_currency"][quote.lower()])
+				if quote.lower() in data["market_data"]["price_change_percentage_1y_in_currency"]:
+					change1y = "\nPast year: *{:+,.2f} %*".format(data["market_data"]["price_change_percentage_1y_in_currency"][quote.lower()])
 				embed.add_field(name="Price Change", value=(change1h + change24h + change7d + change30d + change1y), inline=True)
 
 				marketCap = ""
@@ -2469,9 +2364,9 @@ class Alpha(discord.AutoShardedClient):
 				totalSupply = ""
 				circulatingSupply = ""
 				if data["market_data"]["market_cap"] is not None:
-					marketCap = "Market cap: {:,.0f} {}".format(data["market_data"]["market_cap"][conversion], conversion.upper())
+					marketCap = "Market cap: {:,.0f} {}".format(data["market_data"]["market_cap"][quote.lower()], quote)
 				if data["market_data"]["total_volume"] is not None:
-					totalVolume = "\nTotal volume: {:,.0f} {}".format(data["market_data"]["total_volume"][conversion], conversion.upper())
+					totalVolume = "\nTotal volume: {:,.0f} {}".format(data["market_data"]["total_volume"][quote.lower()], quote)
 				if data["market_data"]["total_supply"] is not None:
 					totalSupply = "\nTotal supply: {:,.0f}".format(data["market_data"]["total_supply"])
 				if data["market_data"]["circulating_supply"] is not None:
@@ -2480,69 +2375,60 @@ class Alpha(discord.AutoShardedClient):
 
 				embed.set_footer(text="Powered by CoinGecko API")
 
+				try: sentMessages.append(await message.channel.send(embed=embed))
+				except Exception as e: await self.unknown_error(message, authorId, e)
+
+				threading.Thread(target=self.fusion.command_stream, args=([message] + sentMessages,)).start()
+				return
+			else:
+				embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
+				embed.set_author(name="Ticker not found", icon_url=firebase_storage.icon_bw)
 				try: await message.channel.send(embed=embed)
-				except: await self.unknown_error(message)
-			elif not mute:
-				try: int(tickerId)
-				except:
-					try: await message.channel.send("Coin information from CoinGecko for **{}** is not available".format(tickerId))
-					except: await self.unknown_error(message)
+				except Exception as e: await self.unknown_error(message, authorId, e)
 		except asyncio.CancelledError: pass
 		except Exception as e:
-			await self.unknown_error(message, report=True)
+			await self.unknown_error(message, authorId, e, report=True)
 			exc_type, exc_obj, exc_tb = sys.exc_info()
 			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
 			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, raw))
 
-	async def markets(self, message, raw, mute=False):
+	async def markets(self, message, authorId, raw, mute=False):
 		try:
 			arguments = raw.split(" ")
 
-			tickerId = arguments[0].upper()
-			if tickerId.startswith("$"):
-				tickerId = tickerId.replace("$", "") + "USD"
-
-			if len(tickerId.replace("-", "+").replace("/", "+").replace("*", "+").split("+")[:-1]) > 1:
-				try: await message.channel.send("Aggregated tickers aren't supported with the **mk** command")
-				except: await self.unknown_error(message)
+			tickerId, _, tickerParts, isAggregatedSymbol, isCryptoTicker = self.coinParser.process_ticker(arguments[0].upper(), "ohlcv")
+			if isAggregatedSymbol:
+				if not mute:
+					embed = discord.Embed(title="Aggregated tickers aren't supported with the `p` command", color=constants.colors["gray"])
+					embed.set_author(name="Aggregated tickers", icon_url=firebase_storage.icon_bw)
+					try: await message.channel.send(embed=embed)
+					except Exception as e: await self.unknown_error(message, authorId, e)
 				return
 
-			if tickerId in ["XBT", "XBTUSD", "BTC"]:
-				tickerId = "BTCUSD"
-			elif tickerId.endswith(("Z19", "U19")):
-				tickerId = tickerId.replace("BTC", "XBT")
-			elif tickerId in self.coinParser.coins["all"]: tickerId = tickerId + "BTC"
+			try: await message.channel.trigger_typing()
+			except: pass
 
-			listings = []
-			for id in self.coinParser.exchanges:
-				if self.coinParser.exchanges[id].symbols is not None:
-					for symbol in self.coinParser.exchanges[id].symbols:
-						pair = symbol.split("/")
-						if (tickerId.startswith(pair[0]) and (tickerId.replace(pair[0], "").endswith(pair[-1]) or tickerId.replace(pair[0], "").endswith(pair[-1].replace("USDT", "USD").replace("USDC", "USD").replace("TUSD", "USD").replace("USDS", "USD").replace("PAX", "USD")))) or (tickerId == pair[0] and len(pair) == 1):
-							if self.coinParser.exchanges[id].name not in listings:
-								listings.append(self.coinParser.exchanges[id].name)
-							break
-			try:
-				if len(listings) != 0: await message.channel.send("__**{}**__ is listed on the following exchanges: **{}**.".format(tickerId, "**, **".join(listings)))
-				else: await message.channel.send("__**{}**__ is not listed on any exchange.".format(tickerId))
-			except: await self.unknown_error(message)
+			listings = self.coinParser.get_listings(tickerId, "", "ohlcv")
+			if len(listings) != 0:
+				embed = discord.Embed(color=constants.colors["deep purple"])
+				embed.add_field(name="Found on {} exchanges".format(len(listings)), value="{}".format(", ".join(listings)), inline=False)
+				embed.set_author(name="{} listings".format(tickerId), icon_url=firebase_storage.icon)
+				try: await message.channel.send(embed=embed)
+				except Exception as e: await self.unknown_error(message, authorId, e)
+			else:
+				embed = discord.Embed(title="`{}` is not listed on any exchange.".format(tickerId), color=constants.colors["gray"])
+				embed.set_author(name="No listings", icon_url=firebase_storage.icon_bw)
+				try: await message.channel.send(embed=embed)
+				except Exception as e: await self.unknown_error(message, authorId, e)
 		except asyncio.CancelledError: pass
 		except Exception as e:
-			await self.unknown_error(message, report=True)
+			await self.unknown_error(message, authorId, e, report=True)
 			exc_type, exc_obj, exc_tb = sys.exc_info()
 			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
 			l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, raw))
 
-	async def funnyReplies(self, message, raw):
-		for response in constants.funnyReplies:
-			for trigger in constants.funnyReplies[response]:
-				if raw == trigger:
-					try: await message.channel.send(response)
-					except: pass
-					return True
-		return False
-
 def handle_exit():
+	client.loop.run_until_complete(client.dblpy.close())
 	client.loop.run_until_complete(client.logout())
 	for t in asyncio.Task.all_tasks(loop=client.loop):
 		if t.done():
