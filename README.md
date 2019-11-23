@@ -56,10 +56,6 @@ Alpha as a whole is not open-sourced but our message-handling system is to provi
 
 Yes, this is expected behavior and was put in place due to safety reasons. Alpha only responds to verified bots. To get your bot verified, please contact me for further instructions.
 
-**...#0000 is unverified, why?**
-
-...#0000 is likely not a bot, but a webhook. I cannot verify webhooks due to how they work on Discord.
-
 
 # Terms of Service
 
