@@ -1,3 +1,5 @@
+[![Discord Bots](https://discordbots.org/api/widget/401328409499664394.svg)](https://discordbots.org/bot/401328409499664394)
+
 # FAQ
 
 ## General
