@@ -13,4 +13,6 @@ python-telegram-bot>=11.1.0
 pytz>=2019.2
 matplotlib>=3.1.1
 dblpy>=0.3.3
-web3>=
+web3>=5.4.0
+pyvirtualdisplay>=0.2.5
+PyUserInput>=0.1.11
