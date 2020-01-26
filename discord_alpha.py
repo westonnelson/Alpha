@@ -88,7 +88,7 @@ class Alpha(discord.AutoShardedClient):
 
 	alphaSettings = {}
 	subscribedUsers = {}
-	subscribedGuilds = []
+	subscribedGuilds = {}
 	userProperties = {}
 	guildProperties = {}
 
