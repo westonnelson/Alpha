@@ -5,7 +5,6 @@ import math
 
 import numpy as np
 import colorsys
-
 from ccxt.base import decimal_to_precision as dtp
 
 
@@ -48,28 +47,29 @@ class Utils(object):
 		else: return "Neutral"
 
 	@staticmethod
-	def recursiveFill(settings, template):
+	def recursive_fill(settings, template):
 		for e in template:
 			if type(template[e]) is dict:
 				if e not in settings:
 					settings[e] = template[e].copy()
 				else:
-					Utils.recursiveFill(settings[e], template[e])
+					Utils.recursive_fill(settings[e], template[e])
 			elif e not in settings:
 				settings[e] = template[e]
 
 	@staticmethod
-	def createUserSettings(settings):
+	def create_user_settings(settings):
 		settingsTemplate = {
 			"premium": {"subscribed": False, "hadTrial": False, "hadWarning": False, "timestamp": 0, "date": "", "plan": 0},
 			"presets": [],
-			"keys": {
-				"id": "",
-				"secret": ""
+			"settings": {
+				"tradinglite": None,
+				"keys": {
+				},
 			},
-			"paper_trading": {
-				"s_lastReset": 0, "s_numOfResets": 0,
-				"binance": {"balance": {"USDT": {"amount": 1000}}, "open_orders": [], "history": []},
+			"paperTrading": {
+				"sLastReset": 0, "sNumOfResets": 0,
+				"binance": {"balance": {"USDT": {"amount": 1000}}, "openOrders": [], "history": []},
 				#"coinbasepro": {"balance": {"USD": {"amount": 1000}}, "open_orders": [], "history": []},
 				#"bittrex": {"balance": {"USD": {"amount": 1000}}, "open_orders": [], "history": []},
 				#"poloniex": {"balance": {"USDT": {"amount": 1000}}, "open_orders": [], "history": []},
@@ -80,12 +80,12 @@ class Utils(object):
 		}
 
 		if settings is None: settings = {}
-		Utils.recursiveFill(settings, settingsTemplate)
+		Utils.recursive_fill(settings, settingsTemplate)
 
 		return settings
 
 	@staticmethod
-	def createServerSetting(settings):
+	def create_server_settings(settings):
 		settingsTemplate = {
 			"premium": {"subscribed": False, "hadTrial": False, "hadWarning": False, "timestamp": 0, "date": "", "plan": 0},
 			"presets": [],
@@ -100,13 +100,24 @@ class Utils(object):
 		}
 
 		if settings is None: settings = {}
-		Utils.recursiveFill(settings, settingsTemplate)
+		Utils.recursive_fill(settings, settingsTemplate)
 
 		return settings
 
 	@staticmethod
-	def updateServerSetting(raw, setting, sub=None, toVal=None):
-		settings = Utils.createServerSetting(raw)
+	def update_user_settings(raw, setting, sub=None, toVal=None):
+		settings = Utils.create_user_settings(raw)
+
+		if sub is not None:
+			settings[setting][sub] = toVal
+		else:
+			settings[setting] = toVal
+
+		return settings
+
+	@staticmethod
+	def update_server_settings(raw, setting, sub=None, toVal=None):
+		settings = Utils.create_server_settings(raw)
 
 		if sub is not None:
 			settings[setting][sub] = toVal
@@ -117,7 +128,7 @@ class Utils(object):
 
 	@staticmethod
 	def updateForwarding(raw, group="general", add=None, remove=None):
-		settings = Utils.createUserSettings(raw)
+		settings = Utils.create_user_settings(raw)
 
 		if len(settings["forwarding"][group]) >= 10:
 			return (settings, "You can only forward to 10 servers")
@@ -142,12 +153,20 @@ class Utils(object):
 			elif raw in ["!invite", "?invite"]: raw = "a invite"
 			elif raw in ["mex", "mex xbt", "mex btc"]: raw = "p xbt"
 			elif raw in ["mex eth"]: raw = "p ethusd mex"
+			elif raw in ["mex xrp"]: raw = "p xrpusd mex"
 			elif raw in ["mex ltc"]: raw = "p ltc mex"
 			elif raw in ["mex bch"]: raw = "p bch mex"
 			elif raw in ["mex eos"]: raw = "p eos mex"
-			elif raw in ["mex xrp"]: raw = "p xrp mex"
 			elif raw in ["mex trx"]: raw = "p trx mex"
 			elif raw in ["mex ada"]: raw = "p ada mex"
+			elif raw in ["stamp"]: raw = "p btc bitstamp"
+			elif raw in ["stamp eth"]: raw = "p ethusd bitstamp"
+			elif raw in ["stamp ltc"]: raw = "p ltc bitstamp"
+			elif raw in ["stamp bch"]: raw = "p bch bitstamp"
+			elif raw in ["stamp eos"]: raw = "p eos bitstamp"
+			elif raw in ["stamp xrp"]: raw = "p xrp bitstamp"
+			elif raw in ["stamp trx"]: raw = "p trx bitstamp"
+			elif raw in ["stamp ada"]: raw = "p ada bitstamp"
 			elif raw in ["finex"]: raw = "p btc bitfinex"
 			elif raw in ["finex eth"]: raw = "p ethusd bitfinex"
 			elif raw in ["finex ltc"]: raw = "p ltc bitfinex"
@@ -171,18 +190,19 @@ class Utils(object):
 		if raw in ["c internals", "c internal", "c int"]: raw = "c uvol-dvol w, tick, dvn-decn, pcc d line"
 		elif raw in ["c btc vol"]: raw = "c bvol"
 		elif raw in ["c mcap"]: raw = "c total nv"
-		elif raw in ["p mcap"]: raw = "p btc 271f45c16070a"
 		elif raw in ["c alt mcap"]: raw = "c total2 nv"
-		elif raw in ["fut", "futs", "futures"]: raw = "p xbtH20, xbtM20"
-		elif raw in ["funding", "fun"]: raw = "p xbt fun, eth mex fun"
+		elif raw in ["fut", "futs", "futures"]: raw = "p xbth20, xbtm20"
+		elif raw in ["funding", "fun"]: raw = "p xbt fun, eth mex fun, xrpusd mex fun"
 		elif raw in ["funding xbt", "fun xbt", "funding xbtusd", "fun xbtusd", "funding btc", "fun btc", "funding btcusd", "fun btcusd", "xbt funding", "xbt fun", "xbtusd funding", "xbtusd fun", "btc funding", "btc fun", "btcusd funding", "btcusd fun"]: raw = "p xbt funding"
 		elif raw in ["funding eth", "fun eth", "funding ethusd", "fun ethusd", "eth funding", "eth fun", "ethusd funding", "ethusd fun"]: raw = "p eth mex funding"
-		elif raw in ["oi", ".oi", "ov", ".ov"]: raw = "p xbt oi, eth mex oi"
-		elif raw in ["oi xbt", ".oi xbt", "ov xbt", ".ov xbt"]: raw = "p xbt oi"
-		elif raw in ["oi eth", ".oi eth", "ov eth", ".ov eth"]: raw = "p eth mex oi"
+		elif raw in ["funding xrp", "fun xrp", "funding xrpusd", "fun xrpusd", "xrp funding", "xrp fun", "xrpusd funding", "xrpusd fun"]: raw = "p xrpusd mex funding"
+		elif raw in ["oi", ".oi", "ov", ".ov"]: raw = "p xbt oi, eth mex oi, xrpusd mex oi"
+		elif raw in ["oi xbt", "oi xbtusd", ".oi xbt", ".oi xbtusd", "ov xbt", "ov xbtusd", ".ov xbt", ".ov xbtusd"]: raw = "p xbt oi"
+		elif raw in ["oi eth", "oi ethusd", ".oi eth", ".oi ethusd", "ov eth", "ov ethusd", ".ov eth", ".ov ethusd"]: raw = "p eth mex oi"
+		elif raw in ["oi xrp", "oi xrpusd", ".oi xrp", ".oi xrpusd", "ov xrp", "ov xrpusd", ".ov xrp", ".ov xrpusd"]: raw = "p xrpusd oi"
 		elif raw in ["prem", "prems", "premiums"]: raw = "p xbt prems"
 		elif raw in ["hmap"]: raw = "hmap change"
-		elif raw in ["p greed index", "p gindex", "p gi", "p fear index", "p findex", "p fi", "p fear greed index", "p fgindex", "p fgi", "p greed fear index", "p gfindex", "p gfi"]: raw = "p btc 05d92bb00c1d5"
+		elif raw in ["p greed index", "p gindex", "p gi", "p fear index", "p findex", "p fi", "p fear greed index", "p fgindex", "p fgi", "p greed fear index", "p gfindex", "p gfi"]: raw = "p am fgi"
 		elif raw in ["c greed index", "c gindex", "c gi", "c fear index", "c findex", "c fi", "c fear greed index", "c fgindex", "c fgi", "c greed fear index", "c gfindex", "c gfi"]: raw = "c am fgi"
 		elif raw in ["c nvtr", "c nvt", "c nvt ratio", "c nvtratio"]: raw = "c wc nvt"
 		elif raw in ["c drbns", "c drbn", "c rbns", "c rbn", "c dribbon", "c difficulty ribbon", "c difficultyribbon"]: raw = "c wc drbn"
