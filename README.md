@@ -18,7 +18,7 @@ TradingView Premium is not available for the data provided by Alpha.
 
 **I'm reaching the chart rate limit. Can I increase it?**
 
-Yes, you can increase the limit by purchasing (https://www.alphabotsystem.com/premium/)[Alpha premium].
+Yes, you can increase the limit by purchasing [link](https://www.alphabotsystem.com/premium/ "Alpha premium").
 
 **Why does Alpha have specific permission?**
 
