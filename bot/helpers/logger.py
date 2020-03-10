@@ -8,15 +8,15 @@ from bot.keys.f802e1fba977727845e8872c1743a714 import Keys as ApiKeys
 
 class Logger(object):
 	@staticmethod
-	def log(p, m="", post=True, color=0x2196F3, thread=False):
+	def log(p, m="", post=True, color=0x2196F3, file=None, thread=False):
 		if thread:
-			t = threading.Thread(target=Logger.push_log_message, args=(p, m, post, color,))
+			t = threading.Thread(target=Logger.push_log_message, args=(p, m, post, color, file,))
 			t.start()
 		else:
-			Logger.push_log_message(p, m, post, color)
+			Logger.push_log_message(p, m, post, color, file)
 
 	@staticmethod
-	def push_log_message(p, m, post, color):
+	def push_log_message(p, m, post, color, file):
 		message = m if m != "" else p
 		prefix = p if m != "" else "Log"
 
@@ -54,5 +54,5 @@ class Logger(object):
 				logWebhook = discord.Webhook.from_url(url, adapter=discord.RequestsWebhookAdapter())
 				logEmbed = discord.Embed(description=message, color=color)
 				logEmbed.set_footer(text=Utils.get_current_date())
-				logWebhook.send(embed=logEmbed, username='Alpha')
+				logWebhook.send(username='Alpha', embed=logEmbed, file=file)
 			except: pass

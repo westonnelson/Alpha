@@ -27,7 +27,7 @@ supportMessages = {
 	"premium": ["Alpha offers premium features like command presets, price alerts, custom indicators, and more. Unlock premium features for as little as $15 a month. https://alphabotsystem.com/pricing/"],
 	"alpha": [":bulb: Alpha can answer many of your questions. Spark a conversation by starting your message with `alpha` and continue with your question"],
 	"alerts": [":bulb: You can set price alerts right through Alpha. Try running `alert set btc 11200` to set an alert when Bitcoin hits $11200, or type `alert help` to learn more"],
-	"c": [":bulb: You can use `c fgi` to check Fear & Greed Index", ":bulb: You can see NVT Ratio or Difficulty Ribbons graphs from Woobull Charts by using `c nvt` and `c drbn` respectively", ":bulb: Request Bitcoin dominance, volatility and crypto market capitalization charts with `c btc dom`, `c btc vol` and `c mcap` or `c alt mcap` respectively"],
+	"c": [":bulb: You can use `c fgi` to check Fear & Greed Index", ":bulb: You can see NVT Ratio or Difficulty Ribbons graphs from Woobull Charts by using `c nvt` and `c drbn` respectively", ":bulb: Request Bitcoin dominance, volatility, and crypto market capitalization charts with `c btc dom`, `c btc vol`, and `c mcap` or `c alt mcap` respectively"],
 	"p": [":bulb: Crypto prices are available effortlessly by using the `p` command. Try running `p btc` to request the current Bitcoin price, or type `p help` to learn more", ":bulb: Request crypto market capitalization, BitMEX Bitcoin futures prices, funding rates, open interest and premiums with `p mcap`, `futures`, `funding`, `oi` and `premiums` respectively"],
 	"v": [":bulb: Rolling 24-hour volume can be requested for thousands of crypto tickers. Try running `v btc` to request the current Bitcoin rolling volume on Binance, or type `v help` to learn more"],
 	"d": [":bulb: Orderbook visualizations are available right through Alpha. Try running `d btc` to request the current Bitcoin orderbook visualization from Binance, or type `d help` to learn more"],
@@ -44,10 +44,14 @@ supportedExchanges = {
 	"TradingView": [
 		"binance", "bitmex", "coinbasepro", "bittrex", "poloniex", "kraken", "deribit", "bitfinex2", "huobipro", "bitflyer", "okcoincny", "okcoinusd", "bithumb", "bitstamp", "bitpandage", "bitso", "btcchina", "btcyou", "bxth", "bybit", "cexio", "cobinhood", "coinfloor", "foxbit", "ftx", "gemini", "gocio", "hitbtc2", "itbit", "korbit", "mercado", "therocktrading", "wex", "xcoin"
 	],
-	"Finviz": ["amex", "nasd", "nyse"],
-	"LLD": ["bitmex", "bitfinex2", "coinbasepro", "binance", "huobipro"],
+	"Finviz": [
+		"amex", "nasd", "nyse"
+	],
+	"LLD": [
+		"bitmex", "bitfinex2", "coinbasepro", "binance", "huobipro"
+	],
 	"CCXT": [
-		"binance", "bitmex", "binancefutures", "coinbasepro", "bittrex", "poloniex", "kraken", "deribit", "kucoin", "bitfinex2", "huobipro", "binanceje", "bitflyer", "okcoincny", "okcoinusd", "bithumb", "bitstamp", "acx", "bibox", "bigone", "binanceus", "bitbank", "bitbay", "bitforex", "bitlish", "bitmart", "bitmax", "bitso", "bitz", "btcmarkets", "btcturk", "bw", "bytetrade", "cex", "coincheck", "coinone", "crex24", "digifinex", "dsx", "exmo", "ftx", "gateio", "gemini", "hitbtc2", "huobiru", "independentreserve", "indodax", "itbit", "lakebtc", "lbank", "liquid", "livecoin", "luno", "mercado", "okex3", "stex", "therock", "tidex", "timex", "topq", "upbit", "yobit", "zaif", "whitebit"
+		"binance", "bitmex", "binancefutures", "coinbasepro", "bittrex", "poloniex", "kraken", "deribit", "kucoin", "bitfinex2", "huobipro", "binanceje", "bitflyer", "okcoincny", "okcoinusd", "bithumb", "bitstamp", "acx", "bibox", "bigone", "binanceus", "bitbank", "bitbay", "bitforex", "bitlish", "bitmart", "bitmax", "bitso", "bitz", "btcmarkets", "btcturk", "bw", "bytetrade", "cex", "coincheck", "coinone", "crex24", "digifinex", "dsx", "exmo", "ftx", "gateio", "gemini", "hitbtc2", "hollaex", "huobiru", "independentreserve", "indodax", "itbit", "lakebtc", "lbank", "liquid", "livecoin", "luno", "mercado", "okex3", "stex", "therock", "tidex", "timex", "topq", "upbit", "yobit", "zaif", "whitebit", "dexblue"
 	],
 	"Alpha Price Alerts": [
 		"binance", "bitmex"
@@ -59,7 +63,7 @@ supportedExchanges = {
 		"binance", "bitmex"#, "coinbasepro", "bittrex", "poloniex", "kraken", "huobipro"
 	]
 }
-ccxtSupportedExchanges = {"_1btcxe", "acx", "adara", "anxpro", "bcex", "bequant", "bibox", "bigone", "binance", "binanceje", "binanceus", "bit2c", "bitbank", "bitbay", "bitfinex", "bitfinex2", "bitflyer", "bitforex", "bithumb", "bitkk", "bitlish", "bitmart", "bitmax", "bitmex", "bitso", "bitstamp", "bitstamp1", "bittrex", "bitz", "bl3p", "bleutrade", "braziliex", "btcalpha", "btcbox", "btcchina", "btcmarkets", "btctradeim", "btctradeua", "btcturk", "buda", "bw", "bytetrade", "cex", "chilebit", "cobinhood", "coinbase", "coinbaseprime", "coinbasepro", "coincheck", "coinegg", "coinex", "coinfalcon", "coinfloor", "coingi", "coinmarketcap", "coinmate", "coinone", "coinspot", "coolcoin", "coss", "crex24", "deribit", "digifinex", "dsx", "exmo", "exx", "fcoin", "fcoinjp", "flowbtc", "foxbit", "ftx", "fybse", "gateio", "gemini", "hitbtc", "hitbtc2", "huobipro", "huobiru", "ice3x", "idex", "independentreserve", "indodax", "itbit", "kkex", "kraken", "kucoin", "kuna", "lakebtc", "latoken", "lbank", "liquid", "livecoin", "luno", "lykke", "mercado", "mixcoins", "oceanex", "okcoincny", "okcoinusd", "okex", "okex3", "paymium", "poloniex", "rightbtc", "southxchange", "stex", "stronghold", "surbitcoin", "theocean", "therock", "tidebit", "tidex", "timex", "topq", "upbit", "vaultoro", "vbtc", "whitebit", "xbtce", "yobit", "zaif", "zb"}
+ccxtSupportedExchanges = {"_1btcxe", "acx", "adara", "anxpro", "bcex", "bequant", "bibox", "bigone", "binance", "binanceje", "binanceus", "bit2c", "bitbank", "bitbay", "bitfinex", "bitfinex2", "bitflyer", "bitforex", "bithumb", "bitkk", "bitlish", "bitmart", "bitmax", "bitmex", "bitso", "bitstamp", "bitstamp1", "bittrex", "bitz", "bl3p", "bleutrade", "braziliex", "btcalpha", "btcbox", "btcchina", "btcmarkets", "btctradeim", "btctradeua", "btcturk", "buda", "bw", "bytetrade", "cex", "chilebit", "cobinhood", "coinbase", "coinbaseprime", "coinbasepro", "coincheck", "coinegg", "coinex", "coinfalcon", "coinfloor", "coingi", "coinmarketcap", "coinmate", "coinone", "coinspot", "coolcoin", "coss", "crex24", "deribit", "digifinex", "dsx", "exmo", "exx", "fcoin", "fcoinjp", "flowbtc", "foxbit", "ftx", "fybse", "gateio", "gemini", "hitbtc", "hitbtc2", "hollaex", "huobipro", "huobiru", "ice3x", "idex", "independentreserve", "indodax", "itbit", "kkex", "kraken", "kucoin", "kuna", "lakebtc", "latoken", "lbank", "liquid", "livecoin", "luno", "lykke", "mercado", "mixcoins", "oceanex", "okcoincny", "okcoinusd", "okex", "okex3", "paymium", "poloniex", "rightbtc", "southxchange", "stex", "stronghold", "surbitcoin", "theocean", "therock", "tidebit", "tidex", "timex", "topq", "upbit", "vaultoro", "vbtc", "whitebit", "xbtce", "yobit", "zaif", "zb"}
 
 messageOverrides = {
 	"I can't help you with that.": {
@@ -150,7 +154,7 @@ blockedBotNames = {
 
 # Servers
 bannedGuilds = {
-	468854180048666625, 577324120371494913, 520669492242677780, 571511712629653514, 632275906303361024
+	468854180048666625, 577324120371494913, 520669492242677780, 571511712629653514, 632275906303361024, 538361750651797504, 602875011157721099
 }
 blockedGuilds = {
 	264445053596991498, 446425626988249089

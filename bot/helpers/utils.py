@@ -95,7 +95,10 @@ class Utils(object):
 				"tos": 0.0,
 				"assistant": True,
 				"shortcuts": True,
-				"autodelete": False
+				"autodelete": False,
+				"defaults": {
+					"exchange": None
+				}
 			}
 		}
 
@@ -226,6 +229,7 @@ class Utils(object):
 		for tf in availableTimeframes:
 			if tf.lower() in exchange.timeframes:
 				return tf, min(rolling24h, dailyOpen), math.ceil(int((exchange.milliseconds() - dailyOpen) / 1000) / Utils.get_frequency_time(tf))
+		return ("1m", int(exchange.milliseconds() / 1000) - 60, 2)
 
 	@staticmethod
 	def get_accepted_timeframes(t):

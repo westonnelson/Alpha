@@ -8,16 +8,11 @@ import time
 import datetime
 import pytz
 import urllib
-import threading
 import argparse
 import logging
 import atexit
 import asyncio
 import concurrent
-import zmq.asyncio
-from zmq.asyncio import Context
-import zlib
-import pickle
 
 import discord
 import ccxt
@@ -34,15 +29,14 @@ from bot.helpers.logger import Logger as l
 from bot.helpers import constants
 
 from bot.engine.assistant import Assistant
-from bot.engine.connections.exchanges import TickerParser
 from bot.engine.fusion import Fusion
+from bot.engine.parser import Parser
 from bot.engine.presets import Presets
 from bot.engine.processor import Processor
 from bot.engine.trader import PaperTrader
 
-from bot.engine.connections.exchanges import CoinGecko
+from bot.engine.connections.coingecko import CoinGecko
 from bot.engine.connections.coindar import Coindar
-
 from bot.engine.constructs.cryptography import EncryptionHandler
 from bot.engine.constructs.message import MessageRequest
 from bot.engine.constructs.exchange import Exchange
@@ -71,18 +65,16 @@ class Alpha(discord.AutoShardedClient):
 
 	lastMessageTimestamp = None
 	dedicatedGuild = -1
-	zmqContext = None
 	executor = None
 	dblpy = None
 
 	assistant = Assistant()
-	tickerParser = TickerParser()
+	parser = Parser()
 	paperTrader = PaperTrader()
+	processor = Processor()
 	fusion = Fusion()
 
-	coinGeckoConnection = CoinGecko()
 	coindar = Coindar()
-
 	encryptionHandler = EncryptionHandler()
 
 	statistics = {"alpha": 0, "alerts": 0, "c": 0, "p": 0, "v": 0, "d": 0, "hmap": 0, "mcap": 0, "news": 0, "mk": 0, "convert": 0, "paper": 0, "live": 0}
@@ -104,7 +96,6 @@ class Alpha(discord.AutoShardedClient):
 
 		atexit.register(self.cleanup)
 		self.dedicatedGuild = for_guild
-		self.zmqContext = Context.instance()
 		self.executor = concurrent.futures.ThreadPoolExecutor()
 
 		newExchanges = list(set(ccxt.exchanges).symmetric_difference(constants.ccxtSupportedExchanges))
@@ -112,13 +103,13 @@ class Alpha(discord.AutoShardedClient):
 
 		for type in constants.supportedExchanges:
 			for id in constants.supportedExchanges[type]:
-				if id not in TickerParser.exchanges:
+				if id not in Parser.exchanges:
 					self.rateLimited["d"][id] = {}
-					TickerParser.exchanges[id] = Exchange(id, type)
+					Parser.exchanges[id] = Exchange(id, type)
 
 		print("[Startup]: exchange initialization complete")
-		await client.loop.run_in_executor(self.executor, self.coinGeckoConnection.refresh_coingecko_datasets)
-		await TickerParser.refresh_ccxt_index()
+		await client.loop.run_in_executor(self.executor, self.parser.refresh_coingecko_datasets)
+		await client.loop.run_in_executor(self.executor, Parser.refresh_ccxt_index)
 		print("[Startup]: coin index refresh complete")
 		await self.fetch_settings(t)
 		print("[Startup]: settings processing complete")
@@ -145,7 +136,8 @@ class Alpha(discord.AutoShardedClient):
 			0: discord.utils.get(self.alphaServer.roles, id=651042597472698368),
 			1: discord.utils.get(self.alphaServer.roles, id=601518889469345810),
 			2: discord.utils.get(self.alphaServer.roles, id=601519642070089748),
-			3: discord.utils.get(self.alphaServer.roles, id=484387309303758848)
+			3: discord.utils.get(self.alphaServer.roles, id=484387309303758848),
+			"indicators": discord.utils.get(self.alphaServer.roles, id=650353024954531840)
 		}
 
 		await self.update_properties()
@@ -214,7 +206,7 @@ class Alpha(discord.AutoShardedClient):
 			termsOfServiceMessage = await faqAndRulesChannel.fetch_message(671771934475943936)
 			faqMessage = await faqAndRulesChannel.fetch_message(671773814182641695)
 			await serverRulesMessage.edit(embed=discord.Embed(title="All members of this official Alpha community must follow the community rules. Failure to do so will result in a warning, kick, or ban, based on our sole discretion.", description="[Community rules](https://www.alphabotsystem.com/community-rules/) (last modified on January 31, 2020)", color=constants.colors["deep purple"]), suppress=False)
-			await termsOfServiceMessage.edit(embed=discord.Embed(title="By using Alpha branded services you agree to our Terms of Service and Privacy Policy. You can read them on our website.", description="[Terms of Service](https://www.alphabotsystem.com/terms-of-service/) (last modified on January 31, 2020)\n[Privacy Policy](https://www.alphabotsystem.com/privacy-policy/) (last modified on January 31, 2020)", color=constants.colors["deep purple"]), suppress=False)
+			await termsOfServiceMessage.edit(embed=discord.Embed(title="By using Alpha branded services you agree to our Terms of Service and Privacy Policy. You can read them on our website.", description="[Terms of Service](https://www.alphabotsystem.com/terms-of-service/) (last modified on January 31, 2020)\n[Privacy Policy](https://www.alphabotsystem.com/privacy-policy/) (last modified on March 6, 2020)", color=constants.colors["deep purple"]), suppress=False)
 			await faqMessage.edit(content=None, embed=discord.Embed(title="If you have any questions, refer to our FAQ section, guide, or ask for help in support channels.", description="[Frequently Asked Questions](https://www.alphabotsystem.com/faq/)\n[Feature overview with examples](https://www.alphabotsystem.com/alpha-bot/features/)\nFor other questions, use <#574196284215525386>", color=constants.colors["deep purple"]), suppress=False)
 
 			# Alpha status
@@ -318,7 +310,7 @@ class Alpha(discord.AutoShardedClient):
 
 			for userId in self.userProperties:
 				if self.userProperties[userId]["premium"]["subscribed"]:
-					if self.userProperties[userId]["premium"]["plan"] != 0:
+					if self.userProperties[userId]["premium"]["plan"] != 0 and str(userId) not in currentNitroBoosters:
 						fetchedSettingsRef = db.document(u"alpha/settings/users/{}".format(userId))
 						self.userProperties[userId] = Utils.create_user_settings(self.userProperties[userId])
 						if self.userProperties[userId]["premium"]["timestamp"] < time.time():
@@ -330,7 +322,7 @@ class Alpha(discord.AutoShardedClient):
 							embed = discord.Embed(title="Your Alpha Premium subscription has expired.", color=constants.colors["deep purple"])
 							try: await recepient.send(embed=embed)
 							except: pass
-							try: await self.alphaServer.get_member(userId).remove_roles(self.premiumRoles[0], self.premiumRoles[self.userProperties[userId]["premium"]["plan"]])
+							try: await self.alphaServer.get_member(userId).remove_roles(self.premiumRoles[0], self.premiumRoles[self.userProperties[userId]["premium"]["plan"]], self.premiumRoles["indicators"])
 							except: pass
 							await importantEventsChannel.send(embed=discord.Embed(title="Alpha Premium for user {} (id: {}) has expired.".format(str(recepient), userId), color=constants.colors["gray"]))
 						elif self.userProperties[userId]["premium"]["timestamp"] - 259200 < time.time() and not self.userProperties[userId]["premium"]["hadWarning"]:
@@ -532,31 +524,23 @@ class Alpha(discord.AutoShardedClient):
 				3: ("BIN", "BTCUSDT", "ETHUSDT")
 			}
 
-			socket = self.zmqContext.socket(zmq.REQ)
-			socket.connect("tcp://127.0.0.1:5555")
 			messageRequest = MessageRequest(authorId=401328409499664394, guildProperties=Utils.create_server_settings(self.guildProperties[414498292655980583]))
 			parameters = [fetchPairs[cycle][0].lower()]
+			price1Text, price2Text = "-", "-"
 
-			outputMessage, request = await Processor.process_price_arguments(messageRequest, parameters, tickerId=fetchPairs[cycle][1], command="p", defaultPlatforms=["CCXT"])
-			await socket.send(zlib.compress(pickle.dumps((messageRequest.authorId, "quote", request), -1)))
-			response = await socket.recv()
-			payload1, quoteText1 = pickle.loads(zlib.decompress(response))
+			outputMessage, request = await self.processor.process_price_arguments(messageRequest, parameters, tickerId=fetchPairs[cycle][1], command="p", defaultPlatforms=["CCXT"])
+			payload1, _ = await self.processor.execute_data_server_request((messageRequest.authorId, "quote", request))
+			if payload1 is not None: price1Text = "{:,.0f}".format(payload1["raw"]["quotePrice"][0])
 
-			outputMessage, request = await Processor.process_price_arguments(messageRequest, parameters, tickerId=fetchPairs[cycle][2], command="p", defaultPlatforms=["CCXT"])
-			await socket.send(zlib.compress(pickle.dumps((messageRequest.authorId, "quote", request), -1)))
-			response = await socket.recv()
-			payload2, quoteText2 = pickle.loads(zlib.decompress(response))
+			outputMessage, request = await self.processor.process_price_arguments(messageRequest, parameters, tickerId=fetchPairs[cycle][2], command="p", defaultPlatforms=["CCXT"])
+			payload2, _ = await self.processor.execute_data_server_request((messageRequest.authorId, "quote", request))
+			if payload2 is not None: price2Text = "{:,.0f}".format(payload2["raw"]["quotePrice"][0])
 
-			outputMessage, request = await Processor.process_price_arguments(messageRequest, [], tickerId="BTCUSD", command="p", defaultPlatforms=["CoinGecko"])
-			await socket.send(zlib.compress(pickle.dumps((messageRequest.authorId, "quote", request), -1)))
-			_ = await socket.recv()
-
-			price1Text = "-" if payload1 is None else "{:,.0f}".format(payload1["raw"]["quotePrice"][0])
-			price2Text = "-" if payload2 is None else "{:,.0f}".format(payload2["raw"]["quotePrice"][0])
+			outputMessage, request = await self.processor.process_price_arguments(messageRequest, [], tickerId="BTCUSD", command="p", defaultPlatforms=["CoinGecko"])
+			_ = await self.processor.execute_data_server_request((messageRequest.authorId, "quote", request))
 
 			try: await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="{} ₿ {} Ξ {}".format(fetchPairs[cycle][0], price1Text, price2Text)))
 			except: pass
-			socket.close()
 		except asyncio.CancelledError: pass
 		except Exception as e:
 			exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -622,23 +606,15 @@ class Alpha(discord.AutoShardedClient):
 						if exchange in ["bitmex", "binance"]: parameters, tickerId = [exchange], tickerId.upper()
 						else: parameters, tickerId = [], "{}:{}".format(exchange.upper(), tickerId.upper())
 
-						outputMessage, request = await Processor.process_chart_arguments(MessageRequest(authorId=401328409499664394, guildProperties=Utils.create_server_settings(self.guildProperties[414498292655980583])), parameters, tickerId, command="c", defaultPlatforms=["TradingLite", "TradingView"])
+						outputMessage, request = await self.processor.process_chart_arguments(MessageRequest(authorId=401328409499664394, guildProperties=Utils.create_server_settings(self.guildProperties[414498292655980583])), parameters, tickerId, command="c", defaultPlatforms=["TradingLite", "TradingView"])
 						request.set_current(timeframe=request.get_timeframes()[0])
-
-						socket = self.zmqContext.socket(zmq.REQ)
-						socket.connect("tcp://127.0.0.1:5555")
-						await socket.send(zlib.compress(pickle.dumps((401328409499664394, "chart", request), -1)))
-						response = await socket.recv()
-						chartName, chartText = pickle.loads(zlib.decompress(response))
-
-						if chartName is None:
-							l.log("Warning", "timestamp: {}, failed to fetch data stream chart: {}, request: {}".format(Utils.get_current_date(), chartText, request))
+						chartName, chartText = await self.processor.execute_data_server_request((401328409499664394, "chart", request))
+						if chartName is None: l.log("Warning", "timestamp: {}, failed to fetch data stream chart: {}, request: {}".format(Utils.get_current_date(), chartText, request))
 						file = None if chartName is None else discord.File("charts/" + chartName, chartName)
 
 						outgoingChannel = client.get_channel(dataStream["id"][i])
 						await outgoingChannel.send(embed=embed, file=file)
 
-						socket.close()
 						try: await message.delete()
 						except: pass
 				except asyncio.CancelledError: pass
@@ -686,9 +662,9 @@ class Alpha(discord.AutoShardedClient):
 				if "4H" in timeframes:
 					await self.update_fusion_queue()
 				if "1D" in timeframes:
-					await client.loop.run_in_executor(self.executor, self.coinGeckoConnection.refresh_coingecko_datasets)
+					await client.loop.run_in_executor(self.executor, self.parser.refresh_coingecko_datasets)
 					if self.alphaSettings["lastStatsSnapshot"] != t.month:
-						await client.loop.run_in_executor(self.executor, self.fusion.push_active_users(db, bucket, t))
+						await client.loop.run_in_executor(self.executor, self.fusion.push_active_users, db, bucket, t)
 				await self.process_data_streams()
 			except asyncio.CancelledError: return
 			except Exception as e:
@@ -716,7 +692,7 @@ class Alpha(discord.AutoShardedClient):
 			if not self.isBotReady or isSelf or isUserBlocked or isChannelBlocked or not hasContent: return
 
 			shortcutsEnabled = True if not messageRequest.has_guild_properties() else messageRequest.guildProperties["settings"]["shortcuts"]
-			hasSendPermission = True if messageRequest.guildId == -1 else message.guild.me.permissions_in(message.channel).send_messages
+			hasSendPermission = True if messageRequest.guildId == -1 else (message.guild.me.permissions_in(message.channel).send_messages and message.guild.me.permissions_in(message.channel).embed_links and message.guild.me.permissions_in(message.channel).attach_files)
 
 			if not messageRequest.content.startswith("preset "):
 				parsedPresets = []
@@ -761,7 +737,7 @@ class Alpha(discord.AutoShardedClient):
 						else:
 							messageRequest.content = "preset add {} {}".format(parsedPresets[0]["phrase"], parsedPresets[0]["shortcut"])
 				elif len(parsedPresets) != 0:
-					await message.channel.send(content="Presets are available to premium servers only. Visit https://www.alphabotsystem.com/premium/ to learn more.")
+					await message.channel.send(content="Presets are available to premium users only. Visit https://www.alphabotsystem.com/premium/ to learn more.")
 
 			messageRequest.content, messageRequest.shortcutUsed = Utils.shortcuts(messageRequest.content, shortcutsEnabled)
 			isCommand = messageRequest.content.startswith(tuple(constants.commandWakephrases)) and not isSelf
@@ -771,18 +747,27 @@ class Alpha(discord.AutoShardedClient):
 					if any([e.id in self.maliciousUsers[messageRequest.guildId][0] for e in message.guild.members]) and time.time() + 60 < self.maliciousUsers[messageRequest.guildId][1]:
 						self.maliciousUsers[messageRequest.guildId][1] = time.time()
 						embed = discord.Embed(title="This Discord server has one or more members disguising as Alpha bot or one of the team members. Server admins are advised to take action.", description="Users flagged for impersonation are: {}".format(", ".join(["<@!{}>".format(e.id) for e in maliciousUsers])), color=0x000000)
+						await message.channel.send(embed=embed)
 
-				if isCommand and messageRequest.content != "alpha setup":
-					if len(self.alphaSettings["tosBlacklist"]) != 0:
+				if isCommand:
+					if not hasSendPermission:
+						errorText = "Alpha is missing the permission to a critical permission. Try re-adding Alpha to your server."
+						try:
+							embed = discord.Embed(title=errorText, color=0x000000)
+							embed.add_field(name="Official Alpha website", value="[alphabotsystem.com](https://www.alphabotsystem.com)", inline=True)
+							embed.add_field(name="Alpha Discord server", value="[Join now](https://discord.gg/GQeDE85)", inline=True)
+							await message.channel.send(embed=embed)
+						except:
+							try: await message.channel.send(content=errorText)
+							except: pass
+						return
+					elif len(self.alphaSettings["tosBlacklist"]) != 0:
 						if message.guild.name in self.alphaSettings["tosBlacklist"]:
 							embed = discord.Embed(title="This Discord server is violating Alpha terms of service. The inability to comply will result in termination of all Alpha services.", color=0x000000)
 							embed.add_field(name="Terms of service", value="[Read now](https://www.alphabotsystem.com/terms-of-service/)", inline=True)
 							embed.add_field(name="Alpha Discord server", value="[Join now](https://discord.gg/GQeDE85)", inline=True)
-					elif not message.guild.me.permissions_in(message.channel).attach_files:
-						embed = discord.Embed(title="Alpha is missing a crytical permission. Run `alpha setup` to learn more.", color=0x000000)
-						embed.add_field(name="Terms of service", value="[Read now](https://www.alphabotsystem.com/terms-of-service/)", inline=True)
-						embed.add_field(name="Alpha Discord server", value="[Join now](https://discord.gg/GQeDE85)", inline=True)
-					elif not message.author.bot and (messageRequest.guildId != -1 if not messageRequest.has_guild_properties() else not messageRequest.guildProperties["hasDoneSetup"]) and message.author.permissions_in(message.channel).administrator:
+							await message.channel.send(embed=embed)
+					elif messageRequest.content != "alpha setup" and not message.author.bot and (messageRequest.guildId != -1 if not messageRequest.has_guild_properties() else not messageRequest.guildProperties["hasDoneSetup"]) and message.author.permissions_in(message.channel).administrator:
 						embed = discord.Embed(title="Thanks for adding Alpha to your server, we're thrilled to have you onboard. We think you're going to love everything Alpha can do. Before you start using it, you must complete a short setup process. Type `alpha setup` to begin.", color=constants.colors["pink"])
 						await message.channel.send(embed=embed)
 
@@ -807,7 +792,7 @@ class Alpha(discord.AutoShardedClient):
 
 								recepient = client.get_user(userId)
 								if recepient is None:
-									await message.channel.send(embed=discord.Embed(title="No users with this id found", color=constants.colors["gray"]))
+									await message.channel.send(embed=discord.Embed(title="No users with this id found.", color=constants.colors["gray"]))
 									return
 
 								fetchedSettingsRef = db.document(u"alpha/settings/users/{}".format(userId))
@@ -840,16 +825,16 @@ class Alpha(discord.AutoShardedClient):
 
 								if plan != 0:
 									if wasSubscribed:
-										embed = discord.Embed(title="Your Alpha {} subscription was extended. Current expiry date: {}".format(planText, fetchedSettings["premium"]["date"]), color=constants.colors["pink"])
+										embed = discord.Embed(title="Your Alpha {} subscription was extended. Current expiry date: {}.".format(planText, fetchedSettings["premium"]["date"]), color=constants.colors["pink"])
 										try: await recepient.send(embed=embed)
 										except: await client.get_channel(595954290409865226).send(content="<@!{}>".format(userId), embed=embed)
 									else:
-										embed = discord.Embed(title="Enjoy your Alpha {} subscription. Current expiry date: {}".format(planText, fetchedSettings["premium"]["date"]), color=constants.colors["pink"])
+										embed = discord.Embed(title="Enjoy your Alpha {} subscription. Current expiry date: {}.".format(planText, fetchedSettings["premium"]["date"]), color=constants.colors["pink"])
 										try: await recepient.send(embed=embed)
 										except: await client.get_channel(595954290409865226).send(content="<@!{}>".format(userId), embed=embed)
-									await client.get_channel(606035811087155200).send(embed=discord.Embed(title="User {} (id: {}) subscribed to Alpha {} until {}".format(str(recepient), userId, planText, fetchedSettings["premium"]["date"]), color=constants.colors["pink"]))
+									await client.get_channel(606035811087155200).send(embed=discord.Embed(title="User {} (id: {}) subscribed to Alpha {} until {}.".format(str(recepient), userId, planText, fetchedSettings["premium"]["date"]), color=constants.colors["pink"]))
 								else:
-									await client.get_channel(606035811087155200).send(embed=discord.Embed(title="User {} (id: {}) was given Alpha {} with no end date".format(str(recepient), userId, planText), color=constants.colors["pink"]))
+									await client.get_channel(606035811087155200).send(embed=discord.Embed(title="User {} (id: {}) was given Alpha {} with no end date.".format(str(recepient), userId, planText), color=constants.colors["pink"]))
 
 								await message.delete()
 						return
@@ -863,7 +848,7 @@ class Alpha(discord.AutoShardedClient):
 
 								setGuild = client.get_guild(guildId)
 								if setGuild is None:
-									await message.channel.send(embed=discord.Embed(title="No servers with this id found", color=constants.colors["gray"]))
+									await message.channel.send(embed=discord.Embed(title="No servers with this id found.", color=constants.colors["gray"]))
 									return
 
 								fetchedSettingsRef = db.document(u"alpha/settings/servers/{}".format(guildId))
@@ -898,18 +883,18 @@ class Alpha(discord.AutoShardedClient):
 
 								if plan > 0:
 									if wasSubscribed:
-										embed = discord.Embed(title="Alpha {} subscription for {} server was extended. Current expiry date: {}".format(planText, setGuild.name, fetchedSettings["premium"]["date"]), color=constants.colors["pink"])
+										embed = discord.Embed(title="Alpha {} subscription for {} server was extended. Current expiry date: {}.".format(planText, setGuild.name, fetchedSettings["premium"]["date"]), color=constants.colors["pink"])
 										try:
 											for recepient in recepients: await recepient.send(embed=embed)
 										except: await client.get_channel(595954290409865226).send(content=", ".join(["<@!{}>".format(e.id) for e in recepients]), embed=embed)
 									else:
-										embed = discord.Embed(title="Enjoy Alpha {} subscription for {} server. Current expiry date: {}".format(planText, setGuild.name, fetchedSettings["premium"]["date"]), color=constants.colors["pink"])
+										embed = discord.Embed(title="Enjoy Alpha {} subscription for {} server. Current expiry date: {}.".format(planText, setGuild.name, fetchedSettings["premium"]["date"]), color=constants.colors["pink"])
 										try:
 											for recepient in recepients: await recepient.send(embed=embed)
 										except: await client.get_channel(595954290409865226).send(content=", ".join(["<@!{}>".format(e.id) for e in recepients]), embed=embed)
-									await client.get_channel(606035811087155200).send(embed=discord.Embed(title="{} server (id: {}) subscribed to Alpha {} until {}".format(setGuild.name, guildId, planText, fetchedSettings["premium"]["date"]), color=constants.colors["pink"]))
+									await client.get_channel(606035811087155200).send(embed=discord.Embed(title="{} server (id: {}) subscribed to Alpha {} until {}.".format(setGuild.name, guildId, planText, fetchedSettings["premium"]["date"]), color=constants.colors["pink"]))
 								else:
-									await client.get_channel(606035811087155200).send(embed=discord.Embed(title="{} server (id: {}) was given Alpha {} with no end date".format(setGuild.name, guildId, planText), color=constants.colors["pink"]))
+									await client.get_channel(606035811087155200).send(embed=discord.Embed(title="{} server (id: {}) was given Alpha {} with no end date.".format(setGuild.name, guildId, planText), color=constants.colors["pink"]))
 
 								await message.delete()
 						return
@@ -996,11 +981,7 @@ class Alpha(discord.AutoShardedClient):
 						if not await self.bot_verification(message, messageRequest, override=True): return
 
 					if messageRequest.content in ["alert help", "alerts help"]:
-						embed = discord.Embed(title=":bell: Price Alerts", description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/alpha-bot/features/price-alerts/)", color=constants.colors["light blue"])
-						embed.add_field(name=":pencil2: Adding price alerts", value="```alert set <coin> <exchange> <price>```", inline=False)
-						embed.add_field(name=":page_with_curl: Listing all your currently set alerts", value="```alert list```Alerts can be deleted by clicking the red cross emoji below each alert.", inline=False)
-						embed.add_field(name=":tada: Alpha Discord server", value="[Join now](https://discord.gg/GQeDE85)", inline=False)
-						embed.set_footer(text="Use \"alert help\" to pull up this list again.")
+						embed = discord.Embed(title=":bell: Price alerts help is no longer available through `alerts help`", description="Use `alpha help`. Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/alpha-bot/features/)", color=constants.colors["gray"])
 						await message.channel.send(embed=embed)
 					else:
 						if messageRequest.is_bronze():
@@ -1013,17 +994,13 @@ class Alpha(discord.AutoShardedClient):
 								self.statistics["alerts"] += 1
 							await self.support_message(message, "alerts")
 						else:
-							await message.channel.send(content="Price alerts are available to premium servers only. Visit https://www.alphabotsystem.com/premium/ to learn more.")
+							await message.channel.send(content="Price alerts are available to premium users only. Visit https://www.alphabotsystem.com/premium/ to learn more.")
 				elif messageRequest.content.startswith("preset "):
 					if message.author.bot:
 						if not await self.bot_verification(message, messageRequest, override=True): return
 
 					if messageRequest.content == "preset help":
-						embed = discord.Embed(title=":pushpin: Command Presets", description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/alpha-bot/features/command-presets/)", color=constants.colors["light blue"])
-						embed.add_field(name=":pencil2: Adding presets", value="```preset add <name> <command>```A preset can be called by typing its name in the chat.", inline=False)
-						embed.add_field(name=":page_with_curl: Listing all your presets", value="```preset list```Presets can be deleted by clicking the red cross emoji below each preset.", inline=False)
-						embed.add_field(name=":tada: Alpha Discord server", value="[Join now](https://discord.gg/GQeDE85)", inline=False)
-						embed.set_footer(text="Use \"preset help\" to pull up this list again.")
+						embed = discord.Embed(title=":pushpin: Command presets help is no longer available through `preset help`", description="Use `alpha help`. Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/alpha-bot/features/)", color=constants.colors["gray"])
 						await message.channel.send(embed=embed)
 					else:
 						if messageRequest.is_bronze():
@@ -1035,17 +1012,14 @@ class Alpha(discord.AutoShardedClient):
 								await self.presets(message, messageRequest, requestSlice)
 							await self.support_message(message, "preset")
 						else:
-							await message.channel.send(content="Presets are available to premium servers only. Visit https://www.alphabotsystem.com/premium/ to learn more.")
+							await message.channel.send(content="Presets are available to premium users only. Visit https://www.alphabotsystem.com/premium/ to learn more.")
 				elif messageRequest.content.startswith("c "):
 					self.fusion.process_active_user(messageRequest.authorId, "c")
 					if message.author.bot:
 						if not await self.bot_verification(message, messageRequest): return
 
 					if messageRequest.content == "c help":
-						embed = discord.Embed(title=":chart_with_upwards_trend: Charts", description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/alpha-bot/features/charts/)", color=constants.colors["light blue"])
-						embed.add_field(name=":pencil2: Syntax", value="```c <ticker id> <exchange> <timeframe(s)> <candle type> <indicators>```You can also use `c tl` or `t tv` to explicitly request a chart from TradingLite or TradingView respectively.", inline=False)
-						embed.add_field(name=":tada: Alpha Discord server", value="[Join now](https://discord.gg/GQeDE85)", inline=False)
-						embed.set_footer(text="Use \"c help\" to pull up this list again.")
+						embed = discord.Embed(title=":chart_with_upwards_trend: Charts help is no longer available through `c help`", description="Use `alpha help`. Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/alpha-bot/features/)", color=constants.colors["gray"])
 						await message.channel.send(embed=embed)
 					elif messageRequest.content == "c parameters":
 						availableIndicators = [
@@ -1054,7 +1028,7 @@ class Alpha(discord.AutoShardedClient):
 						embed = discord.Embed(title=":chains: Chart parameters", description="All available chart parameters you can use.", color=constants.colors["light blue"])
 						embed.add_field(name=":bar_chart: Indicators", value="{}".format(", ".join(availableIndicators)), inline=False)
 						embed.add_field(name=":control_knobs: Timeframes", value="1/3/5/15/30-minute, 1/2/3/4-hour, Daily, Weekly and Monthly", inline=False)
-						embed.add_field(name=":scales: Exchanges", value=", ".join([(TickerParser.exchanges[e].name if e in TickerParser.exchanges else e.title()) for e in constants.supportedExchanges["TradingView"]]), inline=False)
+						embed.add_field(name=":scales: Exchanges", value=", ".join([(Parser.exchanges[e].name if e in Parser.exchanges else e.title()) for e in constants.supportedExchanges["TradingView"]]), inline=False)
 						embed.add_field(name=":chart_with_downwards_trend: Candle types", value="Bars, Candles, Heikin Ashi, Line Break, Line, Area, Renko, Kagi, Point&Figure", inline=False)
 						embed.add_field(name=":gear: Other parameters", value="Shorts, Longs, Log, White, Link", inline=False)
 						embed.set_footer(text="Use \"c parameters\" to pull up this list again.")
@@ -1098,10 +1072,7 @@ class Alpha(discord.AutoShardedClient):
 						if not await self.bot_verification(message, messageRequest): return
 
 					if messageRequest.content == "p help":
-						embed = discord.Embed(title=":money_with_wings: Prices", description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/alpha-bot/features/prices/)", color=constants.colors["light blue"])
-						embed.add_field(name=":pencil2: Syntax", value="```p <ticker id> <exchange>```", inline=False)
-						embed.add_field(name=":tada: Alpha Discord server", value="[Join now](https://discord.gg/GQeDE85)", inline=False)
-						embed.set_footer(text="Use \"p help\" to pull up this list again.")
+						embed = discord.Embed(title=":money_with_wings: Prices help is no longer available through `p help`", description="Use `alpha help`. Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/alpha-bot/features/)", color=constants.colors["gray"])
 						await message.channel.send(embed=embed)
 					elif messageRequest.content not in ["p "]:
 						requestSlices = re.split(", p | p |, ", messageRequest.content.split(" ", 1)[1])
@@ -1140,11 +1111,8 @@ class Alpha(discord.AutoShardedClient):
 					if message.author.bot:
 						if not await self.bot_verification(message, messageRequest): return
 
-					if messageRequest.content == "v help":
-						embed = discord.Embed(title=":credit_card: 24-hour Rolling Volume", description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/alpha-bot/features/rolling-volume/)", color=constants.colors["light blue"])
-						embed.add_field(name=":pencil2: Syntax", value="```v <ticker id> <exchange>```", inline=False)
-						embed.add_field(name=":tada: Alpha Discord server", value="[Join now](https://discord.gg/GQeDE85)", inline=False)
-						embed.set_footer(text="Use \"v help\" to pull up this list again.")
+					if messageRequest.content == ":credit_card: v help":
+						embed = discord.Embed(title="Volume help is no longer available through `preset help`", description="Use `alpha help`. Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/alpha-bot/features/)", color=constants.colors["gray"])
 						await message.channel.send(embed=embed)
 					elif messageRequest.content not in ["v "]:
 						requestSlices = re.split(", v | v |, ", messageRequest.content.split(" ", 1)[1])
@@ -1177,10 +1145,7 @@ class Alpha(discord.AutoShardedClient):
 						if not await self.bot_verification(message, messageRequest): return
 
 					if messageRequest.content == "d help":
-						embed = discord.Embed(title=":book: Orderbook Visualizations", description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/alpha-bot/features/orderbook-visualizations/)", color=constants.colors["light blue"])
-						embed.add_field(name=":pencil2: Syntax", value="```d <ticker id> <exchange>```", inline=False)
-						embed.add_field(name=":tada: Alpha Discord server", value="[Join now](https://discord.gg/GQeDE85)", inline=False)
-						embed.set_footer(text="Use \"d help\" to pull up this list again.")
+						embed = discord.Embed(title=":book: Orderbook visualizations help is no longer available through `d help`", description="Use `alpha help`. Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/alpha-bot/features/)", color=constants.colors["gray"])
 						await message.channel.send(embed=embed)
 					elif messageRequest.content not in ["d "]:
 						requestSlices = re.split(", d | d |, ", messageRequest.content.split(" ", 1)[1])
@@ -1217,10 +1182,7 @@ class Alpha(discord.AutoShardedClient):
 						if not await self.bot_verification(message, messageRequest): return
 
 					if messageRequest.content == "hmap help":
-						embed = discord.Embed(title=":fire: Heat Maps", description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/alpha-bot/features/heat-maps/)", color=constants.colors["light blue"])
-						embed.add_field(name=":pencil2: Syntax", value="```hmap <type> <filters> <period>```", inline=False)
-						embed.add_field(name=":tada: Alpha Discord server", value="[Join now](https://discord.gg/GQeDE85)", inline=False)
-						embed.set_footer(text="Use \"hmap help\" to pull up this list again.")
+						embed = discord.Embed(title=":fire: Heat map help is no longer available through `hmap help`", description="Use `alpha help`. Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/alpha-bot/features/)", color=constants.colors["gray"])
 						await message.channel.send(embed=embed)
 					elif messageRequest.content == "hmap parameters":
 						availableCategories = [
@@ -1269,10 +1231,7 @@ class Alpha(discord.AutoShardedClient):
 						if not await self.bot_verification(message, messageRequest): return
 
 					if messageRequest.content in ["mcap help", "mc help"]:
-						embed = discord.Embed(title=":tools: Cryptocurrency details", description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/alpha-bot/features/cryptocurrency-details/)", color=constants.colors["light blue"])
-						embed.add_field(name=":pencil2: Syntax", value="```mcap/mc <ticker id>```", inline=False)
-						embed.add_field(name=":tada: Alpha Discord server", value="[Join now](https://discord.gg/GQeDE85)", inline=False)
-						embed.set_footer(text="Use \"mc help\" to pull up this list again.")
+						embed = discord.Embed(title=":tools: Cryptocurrency details help is no longer available through `mcap help`", description="Use `alpha help`. Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/alpha-bot/features/)", color=constants.colors["gray"])
 						await message.channel.send(embed=embed)
 					else:
 						requestSlices = re.split(", mcap | mcap |, mc | mc |, ", messageRequest.content.split(" ", 1)[1])
@@ -1301,10 +1260,7 @@ class Alpha(discord.AutoShardedClient):
 						if not await self.bot_verification(message, messageRequest): return
 
 					if messageRequest.content == "n help":
-						embed = discord.Embed(title=":newspaper: News", description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/alpha-bot/features/news/)", color=constants.colors["light blue"])
-						embed.add_field(name=":pencil2: Syntax", value="```n <ticker id>```", inline=False)
-						embed.add_field(name=":tada: Alpha Discord server", value="[Join now](https://discord.gg/GQeDE85)", inline=False)
-						embed.set_footer(text="Use \"n help\" to pull up this list again.")
+						embed = discord.Embed(title=":newspaper: News help is no longer available through `n help`", description="Use `alpha help`. Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/alpha-bot/features/news/)", color=constants.colors["gray"])
 						await message.channel.send(embed=embed)
 					elif messageRequest.content == "n parameters":
 						embed = discord.Embed(title=":chains: News parameters", description="All available news parameters you can use.", color=constants.colors["light blue"])
@@ -1337,10 +1293,7 @@ class Alpha(discord.AutoShardedClient):
 						if not await self.bot_verification(message, messageRequest): return
 
 					if messageRequest.content == "mk help":
-						embed = discord.Embed(title=":page_facing_up: Market listings", description="A command for pulling a list of exchanges listing a particular market ticker.", color=constants.colors["light blue"])
-						embed.add_field(name=":pencil2: Syntax", value="```mk <coin>```", inline=False)
-						embed.add_field(name=":books: Examples", value="● `mk btc` will list all exchanges listing BTCUSD market pair.\n● `mk ada` will list all exchanges listing ADABTC market pair.", inline=False)
-						embed.set_footer(text="Use \"mk help\" to pull up this list again.")
+						embed = discord.Embed(title=":page_facing_up: Market listings help is no longer available through `mk help`", description="Use `alpha help`. Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/alpha-bot/features/)", color=constants.colors["gray"])
 						await message.channel.send(embed=embed)
 					else:
 						requestSlices = re.split(", mk | mk |, ", messageRequest.content.split(" ", 1)[1])
@@ -1369,10 +1322,7 @@ class Alpha(discord.AutoShardedClient):
 						if not await self.bot_verification(message, messageRequest): return
 
 					if messageRequest.content == "convert help":
-						embed = discord.Embed(title=":yen: Cryptocurrency Conversions", description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/alpha-bot/features/cryptocurrency-conversions/)", color=constants.colors["light blue"])
-						embed.add_field(name=":pencil2: Syntax", value="```convert <amount> <from> [to, in...] <to>```", inline=False)
-						embed.add_field(name=":tada: Alpha Discord server", value="[Join now](https://discord.gg/GQeDE85)", inline=False)
-						embed.set_footer(text="Use \"convert help\" to pull up this list again.")
+						embed = discord.Embed(title=":yen: Cryptocurrency conversions help is no longer available through `convert help`", description="Use `alpha help`. Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/alpha-bot/features/)", color=constants.colors["gray"])
 						await message.channel.send(embed=embed)
 					else:
 						requestSlices = re.split(", convert | convert |, ", messageRequest.content.split(" ", 1)[1])
@@ -1466,7 +1416,8 @@ class Alpha(discord.AutoShardedClient):
 					response = await self.assistant.funnyReplies(messageRequest.content)
 					if response is not None:
 						self.statistics["alpha"] += 1
-						await message.channel.send(content=response)
+						try: await message.channel.send(content=response)
+						except: pass
 					return
 		except asyncio.CancelledError: pass
 		except Exception as e:
@@ -1615,7 +1566,7 @@ class Alpha(discord.AutoShardedClient):
 		embed.add_field(name=":bell: Alerts", value="Setup price alerts for select crypto exchanges.\nLearn more on [our website](https://www.alphabotsystem.com/alpha-bot/features/price-alerts/).", inline=False)
 		embed.add_field(name=":money_with_wings: Prices", value="Current cryptocurrency prices for thousands of tickers.\nLearn more on [our website](https://www.alphabotsystem.com/alpha-bot/features/prices/).", inline=False)
 		embed.add_field(name=":book: Orderbook visualizations", value="Orderbook snapshot charts of crypto market pairs.\nLearn more on [our website](https://www.alphabotsystem.com/alpha-bot/features/orderbook-visualizations/).", inline=False)
-		embed.add_field(name=":tools: Cryptocurrency details", value="Detailed cryptocurrency information from CoinGecko.\nLearn more on [our website](https://www.alphabotsystem.com/alpha-bot/features/cryptocurrency-details/).", inline=False)
+		embed.add_field(name=":tools: Cryptocurrency details", value="Detailed cryptocurrency information from Parser.\nLearn more on [our website](https://www.alphabotsystem.com/alpha-bot/features/cryptocurrency-details/).", inline=False)
 		# embed.add_field(name=":newspaper: News", value="See latest news and upcoming events in the crypto space.\nLearn more on [our website](https://www.alphabotsystem.com/alpha-bot/features/news/).", inline=False)
 		embed.add_field(name=":yen: Cryptocurrency conversions", value="An easy way to convert between different currencies or units.\nLearn more on [our website](https://www.alphabotsystem.com/alpha-bot/features/cryptocurrency-conversions/).", inline=False)
 		embed.add_field(name=":fire: Heat maps", value="Check various heat maps from Bitgur.\nLearn more on [our website](https://www.alphabotsystem.com/alpha-bot/features/heat-maps/).", inline=False)
@@ -1650,16 +1601,17 @@ class Alpha(discord.AutoShardedClient):
 		try:
 			if messageRequest.guildId != -1:
 				if message.author.guild_permissions.administrator:
+					accessibleChannels = len([e for e in message.guild.channels if message.guild.me.permissions_in(e).read_messages and e.type == discord.ChannelType.text])
 					embed = discord.Embed(title=":wrench: Setup", color=constants.colors["pink"])
 					embed.add_field(name=":scroll: Terms of service", value="By using Alpha, you agree to Alpha [Terms of Service](https://www.alphabotsystem.com/terms-of-service/) and [Privacy Policy](https://www.alphabotsystem.com/privacy-policy/). For updates, please join the [official Alpha server](https://discord.gg/GQeDE85).", inline=False)
-					embed.add_field(name=":eye: Access", value="Alpha has read access in {} channels. All messages flowing through those channels are processed, but not stored nor analyzed for sentiment, trade, or similar data. Alpha stores anonymous statistical information. If you don't intend on using the bot in some of the channels, restrict its access by disabling its *read messages* permission. For transparency, our message handling system is [open-source](https://github.com/alphabotsystem/Alpha). What data is being used and how is explained in detail in our [Privacy Policy](https://www.alphabotsystem.com/privacy-policy/)".format(len([e for e in message.guild.channels if message.guild.me.permissions_in(e).read_messages])), inline=False)
+					embed.add_field(name=":eye: Access", value="Alpha has read access in {} {}. All messages flowing through those channels are processed, but not stored nor analyzed for sentiment, trade, or similar data. Alpha stores anonymous statistical information. If you don't intend on using the bot in some of the channels, restrict its access by disabling its *read messages* permission. For transparency, our message handling system is [open-source](https://github.com/alphabotsystem/Alpha). What data is being used and how is explained in detail in our [Privacy Policy](https://www.alphabotsystem.com/privacy-policy/)".format(accessibleChannels, "channel" if accessibleChannels == 1 else "channels"), inline=False)
 					embed.add_field(name=":grey_question: Help command", value="Use `alpha help` to learn more about what Alpha can do.", inline=False)
 					embed.add_field(name=":control_knobs: Functionality settings", value="You can enable or disable certain Alpha features. Use `toggle help` to learn more.", inline=False)
 					embed.add_field(name=":link: Official Alpha website", value="[alphabotsystem.com](https://www.alphabotsystem.com)", inline=True)
 					embed.add_field(name=":tada: Alpha Discord server", value="[Join now](https://discord.gg/GQeDE85)", inline=True)
 					embed.add_field(name=":link: Official Alpha Twitter", value="[@AlphaBotSystem](https://twitter.com/AlphaBotSystem)", inline=True)
 					embed.set_footer(text="Use \"alpha setup\" to pull up this list again. Prompt expires in 10 minutes.")
-					await message.channel.send(embed=embed)
+					setupMessage = await message.channel.send(embed=embed)
 
 					if messageRequest.guildProperties is None or not messageRequest.guildProperties["hasDoneSetup"]:
 						embed = discord.Embed(title=":white_check_mark: Type `agree` in order to complete the setup.", color=constants.colors["pink"])
@@ -1675,8 +1627,10 @@ class Alpha(discord.AutoShardedClient):
 							this = await client.wait_for('message', timeout=600.0, check=confirm_order)
 						except:
 							embed = discord.Embed(title=":wrench: Setup", description="Process canceled", color=constants.colors["gray"])
-							await setupMessage.edit(embed=embed)
-							await confirmation.delete()
+							try: await setupMessage.edit(embed=embed)
+							except: pass
+							try: await confirmation.delete()
+							except: pass
 							return
 						else:
 							await message.channel.trigger_typing()
@@ -1793,7 +1747,7 @@ class Alpha(discord.AutoShardedClient):
 
 			if method in ["set", "create", "add"]:
 				if len(arguments) >= 3:
-					outputMessage, request = await Processor.process_price_arguments(messageRequest, arguments[2:], tickerId=arguments[1].upper(), platform=platform, command="alerts", defaultPlatforms=["Alpha Price Alerts"])
+					outputMessage, request = await self.processor.process_price_arguments(messageRequest, arguments[2:], tickerId=arguments[1].upper(), command="alerts", defaultPlatforms=["Alpha Price Alerts"])
 					if outputMessage is not None:
 						if not messageRequest.is_muted():
 							embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
@@ -1888,12 +1842,12 @@ class Alpha(discord.AutoShardedClient):
 								for i in sorted(orderedAlertsList.keys()):
 									alert = orderedAlertsList[i]
 									count += 1
-									base = TickerParser.exchanges[exchange].markets[symbol]["base"]
-									quote = TickerParser.exchanges[exchange].markets[symbol]["quote"]
-									marketPair = TickerParser.exchanges[exchange].markets[symbol]["id"].replace("_", "").replace("/", "").replace("-", "").upper()
-									levelText = Utils.format_price(TickerParser.exchanges[exchange], symbol, alert["level"])
+									base = Parser.exchanges[exchange].markets[symbol]["base"]
+									quote = Parser.exchanges[exchange].markets[symbol]["quote"]
+									marketPair = Parser.exchanges[exchange].markets[symbol]["id"].replace("_", "").replace("/", "").replace("-", "").upper()
+									levelText = Utils.format_price(Parser.exchanges[exchange], symbol, alert["level"])
 
-									embed = discord.Embed(title="{} alert set for {} ({}) at {} {}".format(alert["action"].title(), marketPair, TickerParser.exchanges[exchange].name, levelText, quote), color=constants.colors["deep purple"])
+									embed = discord.Embed(title="{} alert set for {} ({}) at {} {}".format(alert["action"].title(), marketPair, Parser.exchanges[exchange].name, levelText, quote), color=constants.colors["deep purple"])
 									embed.set_footer(text="Alert {}/{} ● (id: {})".format(count, numberOfAlerts, alert["id"]))
 									try:
 										alertMessage = await message.channel.send(embed=embed)
@@ -1992,7 +1946,7 @@ class Alpha(discord.AutoShardedClient):
 			sentMessages = []
 			arguments = requestSlice.split(" ")
 
-			outputMessage, request = await Processor.process_chart_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platform=platform, command="c", defaultPlatforms=["Alternative.me", "Woobull Charts", "TradingLite", "TradingView", "Finviz"])
+			outputMessage, request = await self.processor.process_chart_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platform=platform, command="c", defaultPlatforms=["Alternative.me", "Woobull Charts", "TradingLite", "TradingView", "Finviz"])
 			if outputMessage is not None:
 				if not messageRequest.is_muted():
 					embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
@@ -2000,21 +1954,16 @@ class Alpha(discord.AutoShardedClient):
 					sentMessages.append(await message.channel.send(embed=embed))
 				return ([], 0)
 
-			if messageRequest.has_user_properties() and messageRequest.userProperties["settings"]["tradinglite"] is None and random.randint(0, 10) == 1:
+			if messageRequest.has_user_properties() and messageRequest.userProperties["settings"]["tradinglite"] is None and random.randint(0, 10) == 1 and platform is None:
 				await message.channel.send(embed=discord.Embed(title="You can now request TradingLite charts with orderbook heat maps through Alpha. Type `toggle tradinglite on` and give it a try.", description="Learn more on [tradinglite.com](https://www.tradinglite.com)", color=constants.colors["light blue"]))
 
 			for timeframe in request.get_timeframes():
 				await message.channel.trigger_typing()
 				request.set_current(timeframe=timeframe)
-
-				socket = self.zmqContext.socket(zmq.REQ)
-				socket.connect("tcp://127.0.0.1:5555")
-				await socket.send(zlib.compress(pickle.dumps((messageRequest.authorId, "chart", request), -1)))
-				response = await socket.recv()
-				chartName, chartText = pickle.loads(zlib.decompress(response))
+				chartName, chartText = await self.processor.execute_data_server_request((messageRequest.authorId, "chart", request))
 
 				if chartName is None:
-					errorMessage = "Requested chart for `{}` is not available.".format(request.get_ticker()) if chartText is None else chartText
+					errorMessage = "Requested chart for `{}` is not available.".format(request.get_ticker().name) if chartText is None else chartText
 					embed = discord.Embed(title=errorMessage, color=constants.colors["gray"])
 					embed.set_author(name="Chart not available", icon_url=firebase_storage.icon_bw)
 					chartMessage = await message.channel.send(embed=embed)
@@ -2028,7 +1977,6 @@ class Alpha(discord.AutoShardedClient):
 					try: await chartMessage.add_reaction("☑")
 					except: pass
 
-				socket.close()
 			return (sentMessages, len(sentMessages))
 		except asyncio.CancelledError: return ([], 0)
 		except Exception as e:
@@ -2044,7 +1992,7 @@ class Alpha(discord.AutoShardedClient):
 			sentMessages = []
 			arguments = requestSlice.split(" ")
 
-			outputMessage, request = await Processor.process_price_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platform=platform, command="p", defaultPlatforms=["Alternative.me", "LLD", "CoinGecko", "CCXT", "IEXC"])
+			outputMessage, request = await self.processor.process_price_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platform=platform, command="p", defaultPlatforms=["Alternative.me", "LLD", "CoinGecko", "CCXT", "IEXC"])
 			if outputMessage is not None:
 				if not messageRequest.is_muted():
 					embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
@@ -2054,11 +2002,7 @@ class Alpha(discord.AutoShardedClient):
 
 			await message.channel.trigger_typing()
 
-			socket = self.zmqContext.socket(zmq.REQ)
-			socket.connect("tcp://127.0.0.1:5555")
-			await socket.send(zlib.compress(pickle.dumps((messageRequest.authorId, "quote", request), -1)))
-			response = await socket.recv()
-			payload, quoteText = pickle.loads(zlib.decompress(response))
+			payload, quoteText = await self.processor.execute_data_server_request((messageRequest.authorId, "quote", request))
 
 			if payload is None:
 				errorMessage = "Requested price for `{}` is not available.".format(request.get_ticker().name) if quoteText is None else quoteText
@@ -2086,7 +2030,6 @@ class Alpha(discord.AutoShardedClient):
 					embed.set_footer(text="Price {}".format(payload["sourceText"]))
 					sentMessages.append(await message.channel.send(embed=embed))
 
-			socket.close()
 			return (sentMessages, len(sentMessages))
 		except asyncio.CancelledError: pass
 		except Exception as e:
@@ -2101,7 +2044,7 @@ class Alpha(discord.AutoShardedClient):
 			sentMessages = []
 			arguments = requestSlice.split(" ")
 
-			outputMessage, request = await Processor.process_price_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platform=platform, command="v", defaultPlatforms=["Alternative.me", "LLD", "CoinGecko", "CCXT", "IEXC"])
+			outputMessage, request = await self.processor.process_price_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platform=platform, command="v", defaultPlatforms=["Alternative.me", "LLD", "CoinGecko", "CCXT", "IEXC"])
 			if outputMessage is not None:
 				if not messageRequest.is_muted():
 					embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
@@ -2111,11 +2054,7 @@ class Alpha(discord.AutoShardedClient):
 
 			await message.channel.trigger_typing()
 
-			socket = self.zmqContext.socket(zmq.REQ)
-			socket.connect("tcp://127.0.0.1:5555")
-			await socket.send(zlib.compress(pickle.dumps((messageRequest.authorId, "quote", request), -1)))
-			response = await socket.recv()
-			payload, quoteText = pickle.loads(zlib.decompress(response))
+			payload, quoteText = await self.processor.execute_data_server_request((messageRequest.authorId, "quote", request))
 
 			if payload is None:
 				errorMessage = "Requested volume for `{}` is not available.".format(request.get_ticker().name) if quoteText is None else quoteText
@@ -2126,12 +2065,11 @@ class Alpha(discord.AutoShardedClient):
 				try: await quoteMessage.add_reaction("☑")
 				except: pass
 			else:
-				embed = discord.Embed(title="{:,.0f} {}".format(payload["quoteVolume"], payload["baseTicker"]), description=payload["quoteConvertedVolume"], color=constants.colors["orange"])
+				embed = discord.Embed(title="{:,.4f} {}".format(payload["quoteVolume"], payload["baseTicker"]), description=payload["quoteConvertedVolume"], color=constants.colors["orange"])
 				embed.set_author(name=payload["title"], icon_url=payload["thumbnailUrl"])
 				embed.set_footer(text="Volume {}".format(payload["sourceText"]))
 				sentMessages.append(await message.channel.send(embed=embed))
 
-			socket.close()
 			return (sentMessages, len(sentMessages))
 		except asyncio.CancelledError: pass
 		except Exception as e:
@@ -2146,7 +2084,7 @@ class Alpha(discord.AutoShardedClient):
 			sentMessages = []
 			arguments = requestSlice.split(" ")
 
-			outputMessage, request = await Processor.process_price_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platform=platform, command="d", defaultPlatforms=["CCXT"])
+			outputMessage, request = await self.processor.process_price_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platform=platform, command="d", defaultPlatforms=["CCXT"])
 			if outputMessage is not None:
 				if not messageRequest.is_muted():
 					embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
@@ -2156,11 +2094,7 @@ class Alpha(discord.AutoShardedClient):
 
 			await message.channel.trigger_typing()
 
-			socket = self.zmqContext.socket(zmq.REQ)
-			socket.connect("tcp://127.0.0.1:5555")
-			await socket.send(zlib.compress(pickle.dumps((messageRequest.authorId, "depth", request), -1)))
-			response = await socket.recv()
-			chartName, chartText = pickle.loads(zlib.decompress(response))
+			chartName, chartText = await self.processor.execute_data_server_request((messageRequest.authorId, "depth", request))
 
 			if chartName is None:
 				embed = discord.Embed(title="Requested orderbook visualization for `{}` is not available.".format(request.get_ticker().name), color=constants.colors["gray"])
@@ -2175,7 +2109,6 @@ class Alpha(discord.AutoShardedClient):
 				try: await chartMessage.add_reaction("☑")
 				except: pass
 
-			socket.close()
 			return (sentMessages, len(sentMessages))
 		except asyncio.CancelledError: pass
 		except Exception as e:
@@ -2190,7 +2123,7 @@ class Alpha(discord.AutoShardedClient):
 			sentMessages = []
 			arguments = requestSlice.split(" ")
 
-			outputMessage, request = await Processor.process_chart_arguments(messageRequest, arguments, platform=platform, command="hmap", defaultPlatforms=["Bitgur"])
+			outputMessage, request = await self.processor.process_chart_arguments(messageRequest, arguments, platform=platform, command="hmap", defaultPlatforms=["Bitgur"])
 			if outputMessage is not None:
 				if not messageRequest.is_muted():
 					embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
@@ -2201,12 +2134,7 @@ class Alpha(discord.AutoShardedClient):
 			for timeframe in request.get_timeframes():
 				await message.channel.trigger_typing()
 				request.set_current(timeframe=timeframe)
-
-				socket = self.zmqContext.socket(zmq.REQ)
-				socket.connect("tcp://127.0.0.1:5555")
-				await socket.send(zlib.compress(pickle.dumps((messageRequest.authorId, "chart", request), -1)))
-				response = await socket.recv()
-				chartName, chartText = pickle.loads(zlib.decompress(response))
+				chartName, chartText = await self.processor.execute_data_server_request((messageRequest.authorId, "chart", request))
 
 				if chartName is None:
 					try:
@@ -2227,7 +2155,6 @@ class Alpha(discord.AutoShardedClient):
 						except: pass
 					except Exception as e: await self.unknown_error(message, messageRequest.authorId, e)
 
-				socket.close()
 			return (sentMessages, len(sentMessages))
 		except asyncio.CancelledError: return ([], 0)
 		except Exception as e:
@@ -2243,7 +2170,7 @@ class Alpha(discord.AutoShardedClient):
 			sentMessages = []
 			arguments = requestSlice.split(" ")
 
-			outputMessage, request = await Processor.process_price_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), command="mcap", defaultPlatforms=["CoinGecko"])
+			outputMessage, request = await self.processor.process_price_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), command="mcap", defaultPlatforms=["CoinGecko"])
 			if outputMessage is not None:
 				if not messageRequest.is_muted():
 					embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
@@ -2252,11 +2179,11 @@ class Alpha(discord.AutoShardedClient):
 				return ([], 0)
 
 			ticker = request.get_ticker()
-			if ticker.base in CoinGecko.index:
+			if ticker.base in Parser.coinGeckoIndex:
 				await message.channel.trigger_typing()
 
 				try:
-					data = self.coinGeckoConnection.coingecko.get_coin_by_id(id=CoinGecko.index[ticker.base]["id"], localization="false", tickers=False, market_data=True, community_data=True, developer_data=True)
+					data = self.parser.coinGecko.get_coin_by_id(id=Parser.coinGeckoIndex[ticker.base]["id"], localization="false", tickers=False, market_data=True, community_data=True, developer_data=True)
 				except Exception as e:
 					await self.unknown_error(message, messageRequest.authorId, e)
 					return
@@ -2290,7 +2217,7 @@ class Alpha(discord.AutoShardedClient):
 					basePrice = ("\n{:,.%df} {}" % Utils.add_decimal_zeros(data["market_data"]["current_price"][ticker.quote.lower()])).format(data["market_data"]["current_price"][ticker.quote.lower()], ticker.quote)
 				embed.add_field(name="Price", value=(usdPrice + eurPrice + btcPrice + ethPrice + bnbPrice + xrpPrice + basePrice), inline=True)
 
-				change1h = ""
+				change1h = "Past hour: no data"
 				change24h = ""
 				change7d = ""
 				change30d = ""
@@ -2307,7 +2234,7 @@ class Alpha(discord.AutoShardedClient):
 					change1y = "\nPast year: *{:+,.2f} %*".format(data["market_data"]["price_change_percentage_1y_in_currency"][ticker.quote.lower()])
 				embed.add_field(name="Price Change", value=(change1h + change24h + change7d + change30d + change1y), inline=True)
 
-				marketCap = ""
+				marketCap = "Market cap: no data"
 				totalVolume = ""
 				totalSupply = ""
 				circulatingSupply = ""
@@ -2326,7 +2253,7 @@ class Alpha(discord.AutoShardedClient):
 				sentMessages.append(await message.channel.send(embed=embed))
 				return
 			elif not messageRequest.is_muted():
-				embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
+				embed = discord.Embed(title="Requested market information is not available.", color=constants.colors["gray"])
 				embed.set_author(name="Ticker not found", icon_url=firebase_storage.icon_bw)
 				sentMessages.append(await message.channel.send(embed=embed))
 		except asyncio.CancelledError: pass
@@ -2352,7 +2279,7 @@ class Alpha(discord.AutoShardedClient):
 
 			await message.channel.trigger_typing()
 
-			try: coinThumbnail = CoinGecko.index[base]["image"]
+			try: coinThumbnail = Parser.coinGeckoIndex[base]["image"]
 			except: coinThumbnail = firebase_storage.icon_bw
 
 			try:
@@ -2375,7 +2302,7 @@ class Alpha(discord.AutoShardedClient):
 			sentMessages = []
 			arguments = requestSlice.split(" ")
 
-			outputMessage, request = await Processor.process_price_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platform=platform, command="p", defaultPlatforms=["CCXT"])
+			outputMessage, request = await self.processor.process_price_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), command="p", defaultPlatforms=["CCXT"])
 			if outputMessage is not None:
 				if not messageRequest.is_muted():
 					embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
@@ -2385,7 +2312,7 @@ class Alpha(discord.AutoShardedClient):
 
 			await message.channel.trigger_typing()
 
-			listings = await self.tickerParser.get_listings(request.get_ticker().id, "", "CCXT")
+			listings = await self.parser.get_listings(request.get_ticker().id, "", "CCXT")
 			if len(listings) == 0:
 				embed = discord.Embed(title="`{}` is not listed on any exchange.".format(request.get_ticker().id), color=constants.colors["gray"])
 				embed.set_author(name="No listings", icon_url=firebase_storage.icon_bw)
@@ -2407,9 +2334,9 @@ class Alpha(discord.AutoShardedClient):
 	async def convert(self, message, messageRequest, requestSlice):
 		try:
 			sentMessages = []
-			arguments = self.coinGeckoConnection.argument_cleanup(requestSlice).split(" ")
+			arguments = CoinGecko.argument_cleanup(requestSlice).split(" ")
 
-			outputMessage, arguments = self.coinGeckoConnection.process_converter_arguments(arguments)
+			outputMessage, arguments = CoinGecko.process_converter_arguments(arguments)
 			if outputMessage is not None:
 				if not messageRequest.is_muted():
 					embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
@@ -2418,8 +2345,8 @@ class Alpha(discord.AutoShardedClient):
 				return
 			amount, base, quote = arguments
 
-			isBaseInIndex = base in CoinGecko.exchangeRates or base in CoinGecko.index
-			isQuoteInIndex = quote in CoinGecko.exchangeRates or quote in CoinGecko.index
+			isBaseInIndex = base in Parser.exchangeRates or base in Parser.coinGeckoIndex
+			isQuoteInIndex = quote in Parser.exchangeRates or quote in Parser.coinGeckoIndex
 
 			if not isBaseInIndex or not isQuoteInIndex:
 				if not messageRequest.is_muted():
@@ -2430,8 +2357,7 @@ class Alpha(discord.AutoShardedClient):
 
 			await message.channel.trigger_typing()
 
-			await client.loop.run_in_executor(self.executor, self.coinGeckoConnection.refresh_coingecko_datasets)
-			convertedValue = self.coinGeckoConnection.convert(base, quote, amount)
+			convertedValue = self.parser.convert(base, quote, amount)
 
 			embed = discord.Embed(title="{} {} ≈ {:,.8f} {}".format(amount, base, round(convertedValue, 8), quote), color=constants.colors["deep purple"])
 			embed.set_author(name="Conversion", icon_url=firebase_storage.icon)
@@ -2504,7 +2430,7 @@ class Alpha(discord.AutoShardedClient):
 
 			if len(arguments) > 0:
 				for i, argument in enumerate(arguments):
-					updated, newExchange = await TickerParser.find_exchange(argument, "CCXT")
+					updated, newExchange = await Parser.find_exchange(argument, "CCXT")
 					if updated: exchanges.append(newExchange)
 					elif argument in ["all"]: allBalances = True
 					else:
@@ -2526,7 +2452,7 @@ class Alpha(discord.AutoShardedClient):
 			for id in exchanges:
 				if id not in constants.supportedExchanges["trading"]:
 					if not messageRequest.is_muted():
-						embed = discord.Embed(title="{} exchange is not yet supported. Type `paper help` to learn more.".format(TickerParser.exchanges[id].name), color=constants.colors["gray"])
+						embed = discord.Embed(title="{} exchange is not yet supported. Type `paper help` to learn more.".format(Parser.exchanges[id].name), color=constants.colors["gray"])
 						embed.set_author(name="Invalid usage", icon_url=firebase_storage.icon_bw)
 						try: await message.channel.send(embed=embed)
 						except Exception as e: await self.unknown_error(message, messageRequest.authorId, e)
@@ -2534,7 +2460,7 @@ class Alpha(discord.AutoShardedClient):
 
 			await message.channel.trigger_typing()
 
-			await client.loop.run_in_executor(self.executor, self.coinGeckoConnection.refresh_coingecko_datasets)
+			await client.loop.run_in_executor(self.executor, self.parser.refresh_coingecko_datasets)
 
 			numOfResets = self.userProperties[messageRequest.authorId]["paperTrading"]["sNumOfResets"]
 			lastReset = self.userProperties[messageRequest.authorId]["paperTrading"]["sLastReset"]
@@ -2553,17 +2479,17 @@ class Alpha(discord.AutoShardedClient):
 					numberOfAssets = 0
 
 					for base in sorted(balances.keys()):
-						isFiat, _ = self.coinGeckoConnection.check_if_fiat(base, other=CoinGecko.fiatConversionTickers)
+						isFiat, _ = Parser.check_if_fiat(base, other=Parser.fiatConversionTickers)
 						if not isFiat:
-							tickerId, exchange, tickerParts, isAggregatedSymbol, isCryptoTicker = await self.tickerParser.process_ticker_depricated(base, "trading")
-							outputMessage, details = await self.tickerParser.find_market_pair_depricated(tickerId, exchange, "trading")
+							tickerId, exchange, tickerParts, isAggregatedSymbol, isCryptoTicker = await self.parser.process_ticker_depricated(base, "trading")
+							outputMessage, details = await self.parser.find_market_pair_depricated(tickerId, exchange, "trading")
 							if outputMessage is not None:
 								await self.unknown_error(message, messageRequest.authorId, e, report=True)
-								l.log("Warning", "base {} could not be found on {}".format(base, TickerParser.exchanges[exchange].name))
+								l.log("Warning", "base {} could not be found on {}".format(base, Parser.exchanges[exchange].name))
 								return
 							_, base, quote, marketPair, exchange = details
 
-						coinName = CoinGecko.index[base]["name"] if base in CoinGecko.index else base
+						coinName = Parser.coinGeckoIndex[base]["name"] if base in Parser.coinGeckoIndex else base
 						amount = balances[base]["amount"]
 
 						if exchange in ["bitmex"]:
@@ -2583,24 +2509,24 @@ class Alpha(discord.AutoShardedClient):
 								valueText = "{:,.8f} {}".format(amount, base)
 								convertedValueText = "Stable in fiat value"
 								totalValue += amount
-								btcValue = self.coinGeckoConnection.convert(base, "BTC", amount)
+								btcValue = self.parser.convert(base, "BTC", amount)
 							elif base == "BTC":
 								valueText = "{:,.8f} {}".format(amount, base)
-								convertedValueText = "≈ {:,.6f} {}".format(self.coinGeckoConnection.convert(base, quote, amount), quote)
-								totalValue += self.coinGeckoConnection.convert(base, "USD", amount)
-								btcValue = self.coinGeckoConnection.convert(base, "BTC", amount)
+								convertedValueText = "≈ {:,.6f} {}".format(self.parser.convert(base, quote, amount), quote)
+								totalValue += self.parser.convert(base, "USD", amount)
+								btcValue = self.parser.convert(base, "BTC", amount)
 							else:
 								valueText = "{:,.8f} {}".format(amount, base)
-								convertedValueText = ("{:,.%df} {}" % (6 if quote in CoinGecko.fiatConversionTickers else 8)).format(self.coinGeckoConnection.convert(base, quote, amount), quote)
-								totalValue += self.coinGeckoConnection.convert(base, "USD", amount)
-								btcValue = self.coinGeckoConnection.convert(base, "BTC", amount)
+								convertedValueText = ("{:,.%df} {}" % (6 if quote in Parser.fiatConversionTickers else 8)).format(self.parser.convert(base, quote, amount), quote)
+								totalValue += self.parser.convert(base, "USD", amount)
+								btcValue = self.parser.convert(base, "BTC", amount)
 
 						if (btcValue > 0.001 or btcValue == -1) or (amount > 0 and allBalances):
 							embed.add_field(name="{}:\n{}".format(coinName, valueText), value=convertedValueText, inline=True)
 							fieldIndex += 1
 							numberOfAssets += 1
 
-					embed.insert_field_at(lastExchangeIndex, name="__{}__".format(TickerParser.exchanges[exchange].name), value="Holding {} {}. Estimated total value: ${:,.2f} ({:+,.2f} % ROI)".format(numberOfAssets, "assets" if numberOfAssets > 1 else "asset", totalValue, (totalValue / self.paperTrader.startingBalance[exchange] - 1) * 100), inline=False)
+					embed.insert_field_at(lastExchangeIndex, name="__{}__".format(Parser.exchanges[exchange].name), value="Holding {} {}. Estimated total value: ${:,.2f} ({:+,.2f} % ROI)".format(numberOfAssets, "assets" if numberOfAssets > 1 else "asset", totalValue, (totalValue / self.paperTrader.startingBalance[exchange] - 1) * 100), inline=False)
 
 			try: await message.channel.send(embed=embed)
 			except Exception as e: await self.unknown_error(message, messageRequest.authorId, e)
@@ -2681,7 +2607,7 @@ class Alpha(discord.AutoShardedClient):
 
 			if len(arguments) > 0:
 				for i, argument in enumerate(arguments):
-					updated, newExchange = await TickerParser.find_exchange(argument, "CCXT")
+					updated, newExchange = await Parser.find_exchange(argument, "CCXT")
 					if updated: exchanges.append(newExchange)
 					else:
 						if not messageRequest.is_muted():
@@ -2736,7 +2662,7 @@ class Alpha(discord.AutoShardedClient):
 									quoteText = "%"
 
 								embed = discord.Embed(title="{} {} {} at {} {}".format(side, order["amount"], order["base"], order["price"], quoteText), color=constants.colors["deep purple"])
-								embed.set_footer(text="Order {}/{} ● {} ● (id: {})".format(i + 1, numOfOrders, TickerParser.exchanges[order["exchange"]].name, order["id"]))
+								embed.set_footer(text="Order {}/{} ● {} ● (id: {})".format(i + 1, numOfOrders, Parser.exchanges[order["exchange"]].name, order["id"]))
 								try:
 									orderMessage = await message.channel.send(embed=embed)
 									await orderMessage.add_reaction('❌')
@@ -2754,7 +2680,7 @@ class Alpha(discord.AutoShardedClient):
 			orderType = arguments[0]
 
 			if orderType in ["buy", "sell", "stop-sell", "trailing-stop-sell"] and 2 <= len(arguments) <= 5:
-				tickerId, exchange, tickerParts, isAggregatedSymbol, isCryptoTicker = await self.tickerParser.process_ticker_depricated(arguments[1].upper(), "CCXT")
+				tickerId, exchange, tickerParts, isAggregatedSymbol, isCryptoTicker = await self.parser.process_ticker_depricated(arguments[1].upper(), "CCXT")
 				if isAggregatedSymbol:
 					if not messageRequest.is_muted():
 						embed = discord.Embed(title="Aggregated tickers aren't supported with the `paper` command", color=constants.colors["gray"])
@@ -2763,7 +2689,7 @@ class Alpha(discord.AutoShardedClient):
 						except Exception as e: await self.unknown_error(message, messageRequest.authorId, e)
 					return
 
-				outputMessage, tickerId, arguments = await self.tickerParser.process_trader_arguments(arguments, orderType, tickerId, exchange)
+				outputMessage, tickerId, arguments = await self.parser.process_trader_arguments(arguments, orderType, tickerId, exchange)
 				if outputMessage is not None:
 					if not messageRequest.is_muted():
 						embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
@@ -2773,7 +2699,7 @@ class Alpha(discord.AutoShardedClient):
 					return
 				execPrice, execAmount, isAmountPercent, isPricePercent, reduceOnly, exchange = arguments
 
-				outputMessage, details = await self.tickerParser.find_market_pair_depricated(tickerId, exchange, "trading")
+				outputMessage, details = await self.parser.find_market_pair_depricated(tickerId, exchange, "trading")
 				if outputMessage is not None:
 					if not messageRequest.is_muted():
 						embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
@@ -2788,28 +2714,28 @@ class Alpha(discord.AutoShardedClient):
 				coinThumbnail = firebase_storage.icon_bw
 				baseText = base if exchange != "bitmex" else "contracts"
 
-				tf, limitTimestamp, candleOffset = Utils.get_highest_supported_timeframe(TickerParser.exchanges[exchange].ccxt, datetime.datetime.now().astimezone(pytz.utc))
+				tf, limitTimestamp, candleOffset = Utils.get_highest_supported_timeframe(Parser.exchanges[exchange].ccxt, datetime.datetime.now().astimezone(pytz.utc))
 				try:
-					priceData = TickerParser.exchanges[exchange].fetch_ohlcv(symbol, timeframe=tf.lower(), since=limitTimestamp, limit=300)
+					priceData = Parser.exchanges[exchange].fetch_ohlcv(symbol, timeframe=tf.lower(), since=limitTimestamp, limit=300)
 					if len(priceData) == 0: raise Exception()
 				except:
-					embed = discord.Embed(title="Price data for {} on {} isn't available.".format(marketPair, TickerParser.exchanges[exchange].name), color=constants.colors["gray"])
+					embed = discord.Embed(title="Price data for {} on {} isn't available.".format(marketPair, Parser.exchanges[exchange].name), color=constants.colors["gray"])
 					embed.set_author(name="Couldn't get price data", icon_url=firebase_storage.icon_bw)
 					try: await message.channel.send(embed=embed)
 					except Exception as e: await self.unknown_error(message, messageRequest.authorId, e)
 					return
 
-				try: coinThumbnail = CoinGecko.index[base]["image"]
+				try: coinThumbnail = Parser.coinGeckoIndex[base]["image"]
 				except: pass
 
 				price = [priceData[-1][4], priceData[0][1]] if len(priceData) < candleOffset else [priceData[-1][4], priceData[-candleOffset][1]]
-				volume = sum([candle[5] for candle in priceData if int(candle[0] / 1000) >= int(TickerParser.exchanges[exchange].milliseconds() / 1000) - 86400])
+				volume = sum([candle[5] for candle in priceData if int(candle[0] / 1000) >= int(Parser.exchanges[exchange].milliseconds() / 1000) - 86400])
 
 				if execPrice == -1: execPrice = price[0]
 
 				if not messageRequest.has_user_properties(): self.userProperties[messageRequest.authorId] = {}
 				self.userProperties[messageRequest.authorId] = Utils.create_user_settings(self.userProperties[messageRequest.authorId])
-				outputTitle, outputMessage, details = self.paperTrader.process_trade(self.userProperties[messageRequest.authorId], TickerParser.exchanges[exchange], symbol, orderType, price[0], execPrice, execAmount, isPricePercent, isAmountPercent, reduceOnly)
+				outputTitle, outputMessage, details = self.paperTrader.process_trade(self.userProperties[messageRequest.authorId], Parser.exchanges[exchange], symbol, orderType, price[0], execPrice, execAmount, isPricePercent, isAmountPercent, reduceOnly)
 				if outputMessage is not None:
 					embed = discord.Embed(title=outputMessage, color=constants.colors["gray"])
 					embed.set_author(name=outputTitle, icon_url=firebase_storage.icon_bw)
@@ -2819,7 +2745,7 @@ class Alpha(discord.AutoShardedClient):
 				paper, execPrice, execPriceText, execAmount, execAmountText, isLimitOrder = details
 				self.userProperties[messageRequest.authorId] = paper
 
-				confirmationText = "Do you want to place a paper {} order of {} {} on {} at {} {}?".format(orderType.replace("-", " "), execAmountText, baseText, TickerParser.exchanges[exchange].name, execPriceText, quote)
+				confirmationText = "Do you want to place a paper {} order of {} {} on {} at {} {}?".format(orderType.replace("-", " "), execAmountText, baseText, Parser.exchanges[exchange].name, execPriceText, quote)
 				newOrder = {
 					"id": "%013x" % random.randrange(10**15),
 					"orderType": orderType,
@@ -2861,7 +2787,7 @@ class Alpha(discord.AutoShardedClient):
 				else:
 					await message.channel.trigger_typing()
 
-					paper = self.paperTrader.post_trade(self.userProperties[messageRequest.authorId], TickerParser.exchanges[exchange], symbol, orderType, price[0], execPrice, execAmount, isLimitOrder, isPricePercent, isAmountPercent, reduceOnly)
+					paper = self.paperTrader.post_trade(self.userProperties[messageRequest.authorId], Parser.exchanges[exchange], symbol, orderType, price[0], execPrice, execAmount, isLimitOrder, isPricePercent, isAmountPercent, reduceOnly)
 					if paper is None:
 						await self.unknown_error(message, messageRequest.authorId, e, report=True)
 						return
@@ -2887,7 +2813,7 @@ class Alpha(discord.AutoShardedClient):
 						fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
 						l.log("Error", "timestamp: {}, debug info: {}, {}, line {}, description: {}, command: {}".format(Utils.get_current_date(), exc_type, fname, exc_tb.tb_lineno, e, requestSlice))
 					else:
-						successMessage = "Paper {} order of {} {} on {} at {} {} was successfully {}".format(orderType.replace("-", " "), execAmountText, baseText, TickerParser.exchanges[exchange].name, execPriceText, quote, "executed" if price[0] == execPrice else "placed")
+						successMessage = "Paper {} order of {} {} on {} at {} {} was successfully {}".format(orderType.replace("-", " "), execAmountText, baseText, Parser.exchanges[exchange].name, execPriceText, quote, "executed" if price[0] == execPrice else "placed")
 						embed = discord.Embed(title=successMessage, color=constants.colors["deep purple"])
 						embed.set_author(name="Confirm paper order", icon_url=firebase_storage.icon)
 						try: orderConfirmationMessage = await message.channel.send(embed=embed)
@@ -2985,4 +2911,4 @@ _  ___ |  / __  /_/ /  / / / /_/ /
 		except (Exception, SystemExit):
 			handle_exit()
 
-		client = Alpha(loop=client.loop) if options.guild == -1 else Alpha(loop=client.loop, shard_count=1)
+		client = Alpha(loop=client.loop) if options.guild == 0 else Alpha(loop=client.loop, shard_count=1)
