@@ -203,7 +203,7 @@ class Utils(object):
 		elif raw in ["oi xbt", "oi xbtusd", ".oi xbt", ".oi xbtusd", "ov xbt", "ov xbtusd", ".ov xbt", ".ov xbtusd"]: raw = "p xbt oi"
 		elif raw in ["oi eth", "oi ethusd", ".oi eth", ".oi ethusd", "ov eth", "ov ethusd", ".ov eth", ".ov ethusd"]: raw = "p eth mex oi"
 		elif raw in ["oi xrp", "oi xrpusd", ".oi xrp", ".oi xrpusd", "ov xrp", "ov xrpusd", ".ov xrp", ".ov xrpusd"]: raw = "p xrpusd oi"
-		elif raw in ["prem", "prems", "premiums"]: raw = "p xbt prems"
+		elif raw in ["prem", "prems", "premiums"]: raw = "p btc prems"
 		elif raw in ["hmap"]: raw = "hmap change"
 		elif raw in ["p greed index", "p gindex", "p gi", "p fear index", "p findex", "p fi", "p fear greed index", "p fgindex", "p fgi", "p greed fear index", "p gfindex", "p gfi"]: raw = "p am fgi"
 		elif raw in ["c greed index", "c gindex", "c gi", "c fear index", "c findex", "c fi", "c fear greed index", "c fgindex", "c fgi", "c greed fear index", "c gfindex", "c gfi"]: raw = "c am fgi"

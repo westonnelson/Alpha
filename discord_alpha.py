@@ -185,6 +185,11 @@ class Alpha(discord.AutoShardedClient):
 	async def on_guild_remove(self, guild):
 		await self.update_guild_count()
 
+	async def on_member_join(self, member):
+		if member.guild.id == 414498292655980583:
+			self.alphaServerMembers = [e.id for e in self.alphaServer.members]
+			await self.fusion.check_for_spam(member)
+
 	async def update_guild_count(self):
 		try: await self.dblpy.post_guild_count()
 		except: pass
@@ -206,7 +211,7 @@ class Alpha(discord.AutoShardedClient):
 			termsOfServiceMessage = await faqAndRulesChannel.fetch_message(671771934475943936)
 			faqMessage = await faqAndRulesChannel.fetch_message(671773814182641695)
 			await serverRulesMessage.edit(embed=discord.Embed(title="All members of this official Alpha community must follow the community rules. Failure to do so will result in a warning, kick, or ban, based on our sole discretion.", description="[Community rules](https://www.alphabotsystem.com/community-rules/) (last modified on January 31, 2020)", color=constants.colors["deep purple"]), suppress=False)
-			await termsOfServiceMessage.edit(embed=discord.Embed(title="By using Alpha branded services you agree to our Terms of Service and Privacy Policy. You can read them on our website.", description="[Terms of Service](https://www.alphabotsystem.com/terms-of-service/) (last modified on January 31, 2020)\n[Privacy Policy](https://www.alphabotsystem.com/privacy-policy/) (last modified on March 6, 2020)", color=constants.colors["deep purple"]), suppress=False)
+			await termsOfServiceMessage.edit(embed=discord.Embed(title="By using Alpha branded services you agree to our Terms of Service and Privacy Policy. You can read them on our website.", description="[Terms of Service](https://www.alphabotsystem.com/terms-of-service/) (last modified on March 6, 2020)\n[Privacy Policy](https://www.alphabotsystem.com/privacy-policy/) (last modified on January 31, 2020)", color=constants.colors["deep purple"]), suppress=False)
 			await faqMessage.edit(content=None, embed=discord.Embed(title="If you have any questions, refer to our FAQ section, guide, or ask for help in support channels.", description="[Frequently Asked Questions](https://www.alphabotsystem.com/faq/)\n[Feature overview with examples](https://www.alphabotsystem.com/alpha-bot/features/)\nFor other questions, use <#574196284215525386>", color=constants.colors["deep purple"]), suppress=False)
 
 			# Alpha status
@@ -261,7 +266,6 @@ class Alpha(discord.AutoShardedClient):
 
 	async def update_properties(self):
 		try:
-			self.alphaServerMembers = [e.id for e in self.alphaServer.members]
 			importantEventsChannel = client.get_channel(606035811087155200)
 
 			currentNitroBoosters = [str(e.id) for e in self.alphaServer.premium_subscribers]
@@ -430,7 +434,7 @@ class Alpha(discord.AutoShardedClient):
 						self.maliciousUsers[guild.id][0].append(member.id)
 						if str(member.avatar_url) in suspiciousUsers["oldBlacklist"]: suspiciousUsers["oldBlacklist"].remove(str(member.avatar_url))
 					else:
-						if str(member.avatar_url) in ["https://cdn.discordapp.com/embed/avatars/0.png", "https://cdn.discordapp.com/embed/avatars/1.png", "https://cdn.discordapp.com/embed/avatars/2.png", "https://cdn.discordapp.com/embed/avatars/3.png", "https://cdn.discordapp.com/embed/avatars/4.png"]: continue
+						if str(member.avatar_url) == str(member.default_avatar_url): continue
 
 						if member.id not in [401328409499664394, 361916376069439490, 164073578696802305, 390170634891689984] and member.id not in suspiciousUsers["ids"]:
 							if member.name.lower() in ["maco <alpha dev>", "macoalgo", "macoalgo [alpha]", "alpha", "mal [alpha]", "notmaliciousupload", "tom [alpha]", "tom (cryptocurrencyfacts)"]:
@@ -776,10 +780,12 @@ class Alpha(discord.AutoShardedClient):
 
 				command = messageRequest.content.split(" ", 1)[1]
 				if command == "help":
-					await self.help(message, messageRequest)
+					try: await self.help(message, messageRequest)
+					except: pass
 					return
 				elif command == "invite":
-					await message.channel.send(content="https://discordapp.com/oauth2/authorize?client_id=401328409499664394&scope=bot&permissions=604372033")
+					try: await message.channel.send(content="https://discordapp.com/oauth2/authorize?client_id=401328409499664394&scope=bot&permissions=604372033")
+					except: pass
 					return
 				if messageRequest.authorId in [361916376069439490, 164073578696802305, 390170634891689984]:
 					if command.startswith("premium user"):
@@ -1411,7 +1417,7 @@ class Alpha(discord.AutoShardedClient):
 				await self.brekkeven(message, messageRequest)
 				await self.support_message(message)
 			else:
-				if await self.fusion.invite_warning(message, messageRequest): return
+				if await self.fusion.spam_warning(message, messageRequest, self.alphaServer, self.alphaServerMembers): return
 				if (True if not messageRequest.has_guild_properties() else messageRequest.guildProperties["settings"]["assistant"]):
 					response = await self.assistant.funnyReplies(messageRequest.content)
 					if response is not None:
@@ -1958,9 +1964,9 @@ class Alpha(discord.AutoShardedClient):
 				await message.channel.send(embed=discord.Embed(title="You can now request TradingLite charts with orderbook heat maps through Alpha. Type `toggle tradinglite on` and give it a try.", description="Learn more on [tradinglite.com](https://www.tradinglite.com)", color=constants.colors["light blue"]))
 
 			for timeframe in request.get_timeframes():
-				await message.channel.trigger_typing()
-				request.set_current(timeframe=timeframe)
-				chartName, chartText = await self.processor.execute_data_server_request((messageRequest.authorId, "chart", request))
+				async with message.channel.typing():
+					request.set_current(timeframe=timeframe)
+					chartName, chartText = await self.processor.execute_data_server_request((messageRequest.authorId, "chart", request))
 
 				if chartName is None:
 					errorMessage = "Requested chart for `{}` is not available.".format(request.get_ticker().name) if chartText is None else chartText
@@ -2000,9 +2006,8 @@ class Alpha(discord.AutoShardedClient):
 					sentMessages.append(await message.channel.send(embed=embed))
 				return ([], 0)
 
-			await message.channel.trigger_typing()
-
-			payload, quoteText = await self.processor.execute_data_server_request((messageRequest.authorId, "quote", request))
+			async with message.channel.typing():
+				payload, quoteText = await self.processor.execute_data_server_request((messageRequest.authorId, "quote", request))
 
 			if payload is None:
 				errorMessage = "Requested price for `{}` is not available.".format(request.get_ticker().name) if quoteText is None else quoteText
@@ -2052,9 +2057,8 @@ class Alpha(discord.AutoShardedClient):
 					sentMessages.append(await message.channel.send(embed=embed))
 				return ([], 0)
 
-			await message.channel.trigger_typing()
-
-			payload, quoteText = await self.processor.execute_data_server_request((messageRequest.authorId, "quote", request))
+			async with message.channel.typing():
+				payload, quoteText = await self.processor.execute_data_server_request((messageRequest.authorId, "quote", request))
 
 			if payload is None:
 				errorMessage = "Requested volume for `{}` is not available.".format(request.get_ticker().name) if quoteText is None else quoteText
@@ -2092,9 +2096,8 @@ class Alpha(discord.AutoShardedClient):
 					sentMessages.append(await message.channel.send(embed=embed))
 				return ([], 0)
 
-			await message.channel.trigger_typing()
-
-			chartName, chartText = await self.processor.execute_data_server_request((messageRequest.authorId, "depth", request))
+			async with message.channel.typing():
+				chartName, chartText = await self.processor.execute_data_server_request((messageRequest.authorId, "depth", request))
 
 			if chartName is None:
 				embed = discord.Embed(title="Requested orderbook visualization for `{}` is not available.".format(request.get_ticker().name), color=constants.colors["gray"])
@@ -2132,9 +2135,9 @@ class Alpha(discord.AutoShardedClient):
 				return ([], 0)
 
 			for timeframe in request.get_timeframes():
-				await message.channel.trigger_typing()
-				request.set_current(timeframe=timeframe)
-				chartName, chartText = await self.processor.execute_data_server_request((messageRequest.authorId, "chart", request))
+				async with message.channel.typing():
+					request.set_current(timeframe=timeframe)
+					chartName, chartText = await self.processor.execute_data_server_request((messageRequest.authorId, "chart", request))
 
 				if chartName is None:
 					try:
