@@ -58,95 +58,35 @@ class Utils(object):
 				settings[e] = template[e]
 
 	@staticmethod
-	def create_user_settings(settings):
+	def create_guild_settings(settings):
 		settingsTemplate = {
-			"premium": {"subscribed": False, "hadTrial": False, "hadWarning": False, "timestamp": 0, "date": "", "plan": 0},
-			"presets": [],
+			"connection": None,
 			"settings": {
-				"tradinglite": None,
-				"keys": {
+				"setup": {
+					"completed": False,
+					"tos": 1.0
 				},
-			},
-			"paperTrading": {
-				"sLastReset": 0, "sNumOfResets": 0,
-				"binance": {"balance": {"USDT": {"amount": 1000}}, "openOrders": [], "history": []},
-				#"coinbasepro": {"balance": {"USD": {"amount": 1000}}, "open_orders": [], "history": []},
-				#"bittrex": {"balance": {"USD": {"amount": 1000}}, "open_orders": [], "history": []},
-				#"poloniex": {"balance": {"USDT": {"amount": 1000}}, "open_orders": [], "history": []},
-				#"kraken": {"balance": {"USD": {"amount": 1000}}, "open_orders": [], "history": []},
-				#"huobipro": {"balance": {"USDT": {"amount": 1000}}, "open_orders": [], "history": []},
-				#"bitmex": {"balance": {"BTC": {"amount": 0.1}}, "open_orders": [], "history": []}
-			}
-		}
-
-		if settings is None: settings = {}
-		Utils.recursive_fill(settings, settingsTemplate)
-
-		return settings
-
-	@staticmethod
-	def create_server_settings(settings):
-		settingsTemplate = {
-			"premium": {"subscribed": False, "hadTrial": False, "hadWarning": False, "timestamp": 0, "date": "", "plan": 0},
-			"presets": [],
-			"hasDoneSetup": False,
-			"settings": {
-				"bias": "crypto",
-				"tos": 0.0,
-				"assistant": True,
-				"shortcuts": True,
-				"autodelete": False,
-				"defaults": {
-					"exchange": None
+				"charts": {
+					"defaults": {
+						"exchange": None
+					}
+				},
+				"assistant": {
+					"enabled": True
+				},
+				"messageProcessing": {
+					"bias": "none",
+					"shortcuts": True,
+					"autodelete": False
 				}
-			}
+			},
+			"trace": False
 		}
 
 		if settings is None: settings = {}
 		Utils.recursive_fill(settings, settingsTemplate)
 
 		return settings
-
-	@staticmethod
-	def update_user_settings(raw, setting, sub=None, toVal=None):
-		settings = Utils.create_user_settings(raw)
-
-		if sub is not None:
-			settings[setting][sub] = toVal
-		else:
-			settings[setting] = toVal
-
-		return settings
-
-	@staticmethod
-	def update_server_settings(raw, setting, sub=None, toVal=None):
-		settings = Utils.create_server_settings(raw)
-
-		if sub is not None:
-			settings[setting][sub] = toVal
-		else:
-			settings[setting] = toVal
-
-		return settings
-
-	@staticmethod
-	def updateForwarding(raw, group="general", add=None, remove=None):
-		settings = Utils.create_user_settings(raw)
-
-		if len(settings["forwarding"][group]) >= 10:
-			return (settings, "You can only forward to 10 servers")
-
-		if add in settings["forwarding"][group]:
-			return (settings, "Server is already added")
-
-		if add is not None:
-			settings["forwarding"][group].append(add)
-			return (settings, "Server successfully added")
-		elif remove is not None:
-			settings["forwarding"][group].remove(add)
-			return (settings, "Server successfully removed")
-
-		return settings, "Something went wrong..."
 
 	@staticmethod
 	def shortcuts(raw, allowsShortcuts):
@@ -194,7 +134,7 @@ class Utils(object):
 		elif raw in ["c btc vol"]: raw = "c bvol"
 		elif raw in ["c mcap"]: raw = "c total nv"
 		elif raw in ["c alt mcap"]: raw = "c total2 nv"
-		elif raw in ["fut", "futs", "futures"]: raw = "p xbth20, xbtm20"
+		elif raw in ["fut", "futs", "futures"]: raw = "p xbtm20, xbtu20"
 		elif raw in ["funding", "fun"]: raw = "p xbt fun, eth mex fun, xrpusd mex fun"
 		elif raw in ["funding xbt", "fun xbt", "funding xbtusd", "fun xbtusd", "funding btc", "fun btc", "funding btcusd", "fun btcusd", "xbt funding", "xbt fun", "xbtusd funding", "xbtusd fun", "btc funding", "btc fun", "btcusd funding", "btcusd fun"]: raw = "p xbt funding"
 		elif raw in ["funding eth", "fun eth", "funding ethusd", "fun ethusd", "eth funding", "eth fun", "ethusd funding", "ethusd fun"]: raw = "p eth mex funding"
