@@ -1,6 +1,4 @@
 engine/
-server/
-data_server.py
 *.pyc
 *.log
 __pycache__

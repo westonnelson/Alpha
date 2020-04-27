@@ -23,26 +23,21 @@ colors = {
 }
 
 supportMessages = {
-	"indicators": [":bulb: Check out Alpha Indicator Suite: https://www.alphabotsystem.com/indicator-suite", "Follow us on Tradingview to see our daily take on the market: https://www.tradingview.com/u/AlphaBotSystem"],
-	"premium": [":bulb: Alpha offers premium features like command presets, price alerts, custom indicators, and more. Unlock premium features for as little as $15 a month. https://alphabotsystem.com/premium"],
-	"alpha": [":bulb: Alpha can answer many of your questions. Spark a conversation by starting your message with `alpha` and continue with your question"],
-	"alerts": [":bulb: You can set price alerts right through Alpha. Try running `alert set btc 11200` to set an alert when Bitcoin hits $11200, or type `alert help` to learn more"],
-	"c": [":bulb: You can use `c fgi` to check Fear & Greed Index", ":bulb: You can see NVT Ratio or Difficulty Ribbons graphs from Woobull Charts by using `c nvt` and `c drbn` respectively", ":bulb: Request Bitcoin dominance, volatility, and crypto market capitalization charts with `c btc dom`, `c btc vol`, and `c mcap` or `c alt mcap` respectively"],
-	"p": [":bulb: Crypto prices are available effortlessly by using the `p` command. Try running `p btc` to request the current Bitcoin price, or type `p help` to learn more", ":bulb: Request crypto market capitalization, BitMEX Bitcoin futures prices, funding rates, open interest and premiums with `p mcap`, `futures`, `funding`, `oi` and `premiums` respectively"],
-	"v": [":bulb: Rolling 24-hour volume can be requested for thousands of crypto tickers. Try running `v btc` to request the current Bitcoin rolling volume on Binance, or type `v help` to learn more"],
-	"d": [":bulb: Orderbook visualizations are available right through Alpha. Try running `d btc` to request the current Bitcoin orderbook visualization from Binance, or type `d help` to learn more"],
-	"hmap": [":bulb: Various heat maps for crypto markets are available at your fingertips. Type `hmap help` to learn more"],
-	"mcap": [":bulb: Coin information from CoinGecko can be pulled with the `mcap` command. Type `mcap help` to learn more"],
-	"mk": [":bulb: A list of exchanges listing a particular ticker can be pulled with the `mk` command. Type `mk help` to learn more"],
-	#"paper": [":bulb: You can execute paper trades on various exchanges right through Alpha. Use `paper help` to learn more"]
+	"indicators": [[":bulb: Check out Alpha Indicator Suite: https://www.alphabotsystem.com/indicator-suite.", None], ["Follow us on Tradingview to see our daily take on the market: https://www.tradingview.com/u/AlphaBotSystem.", None]],
+	"premium": [[":bulb: Alpha offers premium features like command presets, price alerts, custom indicators, and more. Unlock premium features for as little as $15 a month.", "Learn more about Alpha Premium and how to start your free trial on [our website](https://alphabotsystem.com/premium)."]],
+	"alpha": [[":bulb: Alpha can answer many of your questions. Spark a conversation by starting your message with `alpha` and continue with your question.", "Learn more about Alpha Bot on [our website](https://alphabotsystem.com/alpha-bot)."]],
+	"alerts": [[":bulb: You can set price alerts right through Alpha. Try running `alert set btc 11200` to set an alert when Bitcoin hits $11200.", "Learn more on [our website](https://alphabotsystem.com/guide)."]],
+	"c": [[":bulb: You can use `c fgi` to check Fear & Greed Index", None], [":bulb: You can see NVT Ratio or Difficulty Ribbons graphs from Woobull Charts by using `c nvt` and `c drbn` respectively.", None], [":bulb: Request Bitcoin dominance, volatility, and crypto market capitalization charts with `c btc dom`, `c btc vol`, and `c mcap` or `c alt mcap` respectively.", None]],
+	"p": [[":bulb: Crypto prices are available effortlessly by using the `p` command. Try running `p btc` to request the current Bitcoin price.", "Learn more on [our website](https://alphabotsystem.com/guide)."], [":bulb: Request crypto market capitalization, BitMEX Bitcoin futures prices, funding rates, open interest and premiums with `p mcap`, `futures`, `funding`, `oi` and `premiums` respectively.", None]],
+	#"paper": [":bulb: You can execute paper trades on various exchanges right through Alpha."]
 }
 
 supportedExchanges = {
 	"TradingLite": [
-		"binance", "bitmex", "binancefutures", "coinbasepro", "bitfinex2", "bitstamp", "deribit", "hitbtc2", "okex"
+		"binance", "bitmex", "binancefutures", "coinbasepro", "bitfinex2", "bitstamp", "deribit", "hitbtc", "okex"
 	],
 	"TradingView": [
-		"binance", "bitmex", "binancefutures", "huobipro", "coinbasepro", "bithumb", "kraken", "bitfinex2", "bitstamp", "bitflyer", "poloniex", "kucoin", "bittrex", "ftx", "bybit", "deribit", "bitpandapro", "bitso", "btcyou", "bxth", "cexio", "coinfloor", "foxbit", "gemini", "gocio", "hitbtc2", "itbit", "korbit", "mercado", "okcoin", "therocktrading", "wex", "xcoin"
+		"binance", "bitmex", "binancefutures", "huobipro", "coinbasepro", "bithumb", "kraken", "bitfinex2", "bitstamp", "bitflyer", "poloniex", "kucoin", "bittrex", "ftx", "bybit", "deribit", "bitpandapro", "bitso", "btcyou", "bxth", "cexio", "coinfloor", "foxbit", "gemini", "gocio", "hitbtc", "itbit", "korbit", "mercado", "okcoin", "therocktrading", "wex", "xcoin"
 	],
 	"Finviz": [
 		"amex", "nasd", "nyse"
@@ -51,7 +46,7 @@ supportedExchanges = {
 		"bitmex", "bitfinex2", "coinbasepro", "binance", "huobipro"
 	],
 	"CCXT": [
-		"binance", "bitmex", "binancefutures", "huobipro", "coinbasepro", "bithumb", "kraken", "bitfinex2", "bitstamp", "bitflyer", "poloniex", "kucoin", "bittrex", "ftx", "bybit", "deribit", "acx", "aofex", "bibox", "bigone", "binanceje", "binanceus", "bitbank", "bitbay", "bitforex", "bitmart", "bitmax", "bitso", "bitz", "btcmarkets", "btcturk", "bw", "bytetrade", "cex", "coincheck", "coinone", "crex24", "dexblue", "digifinex", "dsx", "exmo", "gateio", "gemini", "hitbtc2", "hollaex", "huobiru", "independentreserve", "indodax", "itbit", "lakebtc", "lbank", "liquid", "livecoin", "luno", "mercado", "okcoin", "okex", "stex", "therock", "tidex", "timex", "topq", "upbit", "whitebit", "yobit", "zaif"
+		"binance", "bitmex", "binancefutures", "huobipro", "coinbasepro", "bithumb", "kraken", "bitfinex2", "bitstamp", "bitflyer", "poloniex", "kucoin", "bittrex", "ftx", "bybit", "deribit", "acx", "aofex", "bibox", "bigone", "binanceje", "binanceus", "bitbank", "bitbay", "bitforex", "bitmart", "bitmax", "bitso", "bitz", "btcmarkets", "btcturk", "bw", "bytetrade", "cex", "coincheck", "coinone", "crex24", "dexblue", "digifinex", "dsx", "exmo", "gateio", "gemini", "hitbtc", "hollaex", "huobiru", "independentreserve", "indodax", "itbit", "lakebtc", "lbank", "liquid", "livecoin", "luno", "mercado", "okcoin", "okex", "stex", "therock", "tidex", "timex", "topq", "upbit", "whitebit", "yobit", "zaif"
 	],
 	"Alpha Market Alerts": [
 		"binance", "bitmex", "coinbasepro", "ftx", "bybit"
@@ -63,7 +58,7 @@ supportedExchanges = {
 		"binance", "bitmex"
 	]
 }
-ccxtSupportedExchanges = {"_1btcxe", "acx", "adara", "anxpro", "aofex", "bcex", "bequant", "bibox", "bigone", "binance", "binanceje", "binanceus", "bit2c", "bitbank", "bitbay", "bitfinex", "bitfinex2", "bitflyer", "bitforex", "bithumb", "bitkk", "bitmart", "bitmax", "bitmex", "bitso", "bitstamp", "bitstamp1", "bittrex", "bitz", "bl3p", "bleutrade", "braziliex", "btcalpha", "btcbox", "btcmarkets", "btctradeim", "btctradeua", "btcturk", "buda", "bw", "bybit", "bytetrade", "cex", "chilebit", "coinbase", "coinbaseprime", "coinbasepro", "coincheck", "coinegg", "coinex", "coinfalcon", "coinfloor", "coingi", "coinmarketcap", "coinmate", "coinone", "coinspot", "coolcoin", "coss", "crex24", "deribit", "digifinex", "dsx", "exmo", "exx", "fcoin", "fcoinjp", "flowbtc", "foxbit", "ftx", "fybse", "gateio", "gemini", "hitbtc", "hitbtc2", "hollaex", "huobipro", "huobiru", "ice3x", "idex", "independentreserve", "indodax", "itbit", "kkex", "kraken", "kucoin", "kuna", "lakebtc", "latoken", "lbank", "liquid", "livecoin", "luno", "lykke", "mercado", "mixcoins", "oceanex", "okcoin", "okex", "paymium", "poloniex", "rightbtc", "southxchange", "stex", "stronghold", "surbitcoin", "theocean", "therock", "tidebit", "tidex", "timex", "topq", "upbit", "vaultoro", "vbtc", "whitebit", "xbtce", "yobit", "zaif", "zb"}
+ccxtSupportedExchanges = {"_1btcxe", "acx", "adara", "anxpro", "aofex", "bcex", "bequant", "bibox", "bigone", "binance", "binanceje", "binanceus", "bit2c", "bitbank", "bitbay", "bitfinex", "bitfinex2", "bitflyer", "bitforex", "bithumb", "bitkk", "bitmart", "bitmax", "bitmex", "bitso", "bitstamp", "bitstamp1", "bittrex", "bitz", "bl3p", "bleutrade", "braziliex", "btcalpha", "btcbox", "btcmarkets", "btctradeim", "btctradeua", "btcturk", "buda", "bw", "bybit", "bytetrade", "cex", "chilebit", "coinbase", "coinbaseprime", "coinbasepro", "coincheck", "coinegg", "coinex", "coinfalcon", "coinfloor", "coingi", "coinmarketcap", "coinmate", "coinone", "coinspot", "coolcoin", "coss", "crex24", "deribit", "digifinex", "dsx", "exmo", "exx", "fcoin", "fcoinjp", "flowbtc", "foxbit", "ftx", "fybse", "gateio", "gemini", "hitbtc", "hitbtc", "hollaex", "huobipro", "huobiru", "ice3x", "idex", "independentreserve", "indodax", "itbit", "kkex", "kraken", "kucoin", "kuna", "lakebtc", "latoken", "lbank", "liquid", "livecoin", "luno", "lykke", "mercado", "mixcoins", "oceanex", "okcoin", "okex", "paymium", "poloniex", "rightbtc", "southxchange", "stex", "stronghold", "surbitcoin", "theocean", "therock", "tidebit", "tidex", "timex", "topq", "upbit", "vaultoro", "vbtc", "whitebit", "xbtce", "yobit", "zaif", "zb"}
 
 messageOverrides = {
 	"I can't help you with that.": {
@@ -85,7 +80,7 @@ messageOverrides = {
 		"The Google team is like my family, they mean a lot to me",
 		"Everyone at Google is sort of like my family"
 	},
-	"Earning and maintaining your trust is a priority at Alpha Bot System. You can learn more about Alpha's principles and practices at https://www.alphabotsystem.com/privacy-policy/.": {
+	"Earning and maintaining your trust is a priority at Alpha Bot System. You can learn more about Alpha's principles and practices at https://www.alphabotsystem.com/privacy-policy.": {
 		"Earning and maintaining your trust is a priority at Google. Google protects your data and ensures you are in control. You can learn more about Google's principles and practices at safety.google.com. To see and manage your account information, visit myaccount.google.com. That's myaccount.google.com."
 	}
 }

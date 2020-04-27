@@ -3,7 +3,6 @@ import datetime
 import pytz
 import math
 
-import numpy as np
 import colorsys
 from ccxt.base import decimal_to_precision as dtp
 
@@ -56,37 +55,6 @@ class Utils(object):
 					Utils.recursive_fill(settings[e], template[e])
 			elif e not in settings:
 				settings[e] = template[e]
-
-	@staticmethod
-	def create_guild_settings(settings):
-		settingsTemplate = {
-			"connection": None,
-			"settings": {
-				"setup": {
-					"completed": False,
-					"tos": 1.0
-				},
-				"charts": {
-					"defaults": {
-						"exchange": None
-					}
-				},
-				"assistant": {
-					"enabled": True
-				},
-				"messageProcessing": {
-					"bias": "none",
-					"shortcuts": True,
-					"autodelete": False
-				}
-			},
-			"trace": False
-		}
-
-		if settings is None: settings = {}
-		Utils.recursive_fill(settings, settingsTemplate)
-
-		return settings
 
 	@staticmethod
 	def shortcuts(raw, allowsShortcuts):
@@ -195,18 +163,6 @@ class Utils(object):
 		elif t == "10m": return 600
 		elif t == "5m": return 300
 		elif t == "1m": return 60
-
-	@staticmethod
-	def shift_hue(arr, hout):
-		rgb_to_hsv = np.vectorize(colorsys.rgb_to_hsv)
-		hsv_to_rgb = np.vectorize(colorsys.hsv_to_rgb)
-
-		r, g, b, a = np.rollaxis(arr, axis=-1)
-		h, s, v = rgb_to_hsv(r, g, b)
-		h += hout
-		r, g, b = hsv_to_rgb(h, s, v)
-		arr = np.dstack((r, g, b, a))
-		return arr
 
 	@staticmethod
 	def timestamp_to_date(timestamp):
