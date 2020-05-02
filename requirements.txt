@@ -4,6 +4,7 @@ websockets>=6.0,!=7.0,!=8.0,!=8.0.1,<9.0
 firebase-admin>=2.11.0
 google-assistant-sdk[samples]
 ccxt>=1.13.50
+iexfinance>=0.4.3
 click>=7.0
 pycoingecko>=0.3.0
 python-telegram-bot>=11.1.0
