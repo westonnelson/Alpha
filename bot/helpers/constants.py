@@ -1,5 +1,5 @@
-commandWakephrases = ["toggle ", "alpha ", "alert ", "alerts ", "preset ", "c ", "p ", "v ", "d ", "hmap ", "mcap ", "mc ", "n ", "mk ", "convert ", "paper ", "x "]
-commandKeywords = ["toggle", "alpha", "alert", "alerts", "preset", "c", "p", "v", "d", "hmap", "mcap", "mc", "n", "mk", "convert", "paper", "x"]
+commandWakephrases = ["toggle ", "alpha ", "alert ", "alerts ", "preset ", "c ", "p ", "v ", "d ", "hmap ", "mcap ", "mc ", "n ", "mk ", "convert ", "paper ", "x ", "flow "]
+commandKeywords = ["toggle", "alpha", "alert", "alerts", "preset", "c", "p", "v", "d", "hmap", "mcap", "mc", "n", "mk", "convert", "paper", "x", "flow"]
 
 colors = {
 	"red": 0xF44336,
@@ -23,7 +23,7 @@ colors = {
 }
 
 supportMessages = {
-	"indicators": [[":bulb: Check out Alpha Indicator Suite: https://www.alphabotsystem.com/indicator-suite.", None], ["Follow us on Tradingview to see our daily take on the market: https://www.tradingview.com/u/AlphaBotSystem.", None]],
+	"indicators": [[":bulb: Check out Alpha Indicator Suite: https://www.alphabotsystem.com/indicator-suite.", None], ["Follow us on TradingView to see our daily take on the market: https://www.alphabotsystem.com/redirect/tradingview.", None]],
 	# "premium": [[":bulb: Alpha offers premium features like command presets, price alerts, custom indicators, and more. Unlock premium features for as little as $15 a month.", "Learn more about Alpha Premium and how to start your free trial on [our website](https://www.alphabotsystem.com/premium)."]],
 	# "alerts": [[":bulb: You can set price alerts right through Alpha. Try running `alert set btc 11200` to set an alert when Bitcoin hits $11200.", "Learn more on [our website](https://www.alphabotsystem.com/guide)."]],
 	# "c": [[":bulb: You can use `c fgi` to check Fear & Greed Index", None], [":bulb: You can see NVT Ratio or Difficulty Ribbons graphs from Woobull Charts by using `c nvt` and `c drbn` respectively.", None], [":bulb: Request Bitcoin dominance, volatility, and crypto market capitalization charts with `c btc dom`, `c btc vol`, and `c mcap` or `c alt mcap` respectively.", None]],
@@ -33,19 +33,16 @@ supportMessages = {
 
 supportedCryptoExchanges = {
 	"TradingLite": [
-		"binance", "bitmex", "binancefutures", "coinbasepro", "bitfinex2", "bitstamp", "deribit", "hitbtc", "okex"
+		"binance", "bitmex", "binancefutures", "coinbasepro", "bitfinex2", "bitstamp", "deribit", "okex"
 	],
 	"TradingView": [
 		"binance", "bitmex", "binancefutures", "huobipro", "coinbasepro", "bithumb", "kraken", "bitfinex2", "bitstamp", "bitflyer", "poloniex", "kucoin", "bittrex", "ftx", "bybit", "deribit", "bitpandapro", "bitso", "btcyou", "bxth", "cexio", "coinfloor", "foxbit", "gemini", "gocio", "hitbtc", "itbit", "korbit", "mercado", "okcoin", "therocktrading", "wex", "xcoin"
-	],
-	"Finviz": [
-		"amex", "nasd", "nyse"
 	],
 	"LLD": [
 		"bitmex", "bitfinex2", "coinbasepro", "binance", "huobipro"
 	],
 	"CCXT": [
-		"binance", "bitmex", "binancefutures", "huobipro", "coinbasepro", "bithumb", "kraken", "bitfinex2", "bitstamp", "bitflyer", "poloniex", "kucoin", "bittrex", "ftx", "bybit", "deribit", "acx", "aofex", "bibox", "bigone", "binanceje", "binanceus", "bitbank", "bitbay", "bitforex", "bitmart", "bitmax", "bitso", "bitz", "btcmarkets", "btcturk", "bw", "bytetrade", "cex", "coincheck", "coinone", "crex24", "dexblue", "digifinex", "dsx", "exmo", "gateio", "gemini", "hitbtc", "hollaex", "huobiru", "independentreserve", "indodax", "itbit", "lakebtc", "lbank", "liquid", "livecoin", "luno", "mercado", "okcoin", "okex", "stex", "therock", "tidex", "timex", "topq", "upbit", "whitebit", "yobit", "zaif"
+		"binance", "bitmex", "binancefutures", "huobipro", "coinbasepro", "bithumb", "kraken", "bitfinex2", "bitstamp", "bitflyer", "poloniex", "kucoin", "bittrex", "ftx", "bybit", "deribit", "_1btcxe", "acx", "aofex", "bequant", "bibox", "bigone", "binanceje", "binanceus", "bitbank", "bitbay", "bitforex", "bitkk", "bitmart", "bitmax", "bitz", "bleutrade", "btcalpha", "btcmarkets", "btcturk", "buda", "bw", "bytetrade", "cex", "coinbaseprime", "coinex", "coss", "crex24", "dexblue", "digifinex", "dsx", "exmo", "fcoin", "fcoinjp", "gateio", "gemini", "hbtc", "hitbtc", "hollaex", "huobiru", "kkex", "lbank", "mercado", "oceanex", "okcoin", "okex", "rightbtc", "stex", "tidebit", "timex", "topq", "upbit", "whitebit", "zb"
 	],
 	"Alpha Market Alerts": [
 		"binance", "bitmex", "coinbasepro", "ftx", "bybit"
@@ -57,7 +54,7 @@ supportedCryptoExchanges = {
 		"binance", "bitmex"
 	]
 }
-ccxtSupportedExchanges = {"_1btcxe", "acx", "adara", "anxpro", "aofex", "bcex", "bequant", "bibox", "bigone", "binance", "binanceje", "binanceus", "bit2c", "bitbank", "bitbay", "bitfinex", "bitfinex2", "bitflyer", "bitforex", "bithumb", "bitkk", "bitmart", "bitmax", "bitmex", "bitso", "bitstamp", "bitstamp1", "bittrex", "bitz", "bl3p", "bleutrade", "braziliex", "btcalpha", "btcbox", "btcmarkets", "btctradeim", "btctradeua", "btcturk", "buda", "bw", "bybit", "bytetrade", "cex", "chilebit", "coinbase", "coinbaseprime", "coinbasepro", "coincheck", "coinegg", "coinex", "coinfalcon", "coinfloor", "coingi", "coinmarketcap", "coinmate", "coinone", "coinspot", "coolcoin", "coss", "crex24", "deribit", "digifinex", "dsx", "exmo", "exx", "fcoin", "fcoinjp", "flowbtc", "foxbit", "ftx", "fybse", "gateio", "gemini", "hitbtc", "hitbtc", "hollaex", "huobipro", "huobiru", "ice3x", "idex", "independentreserve", "indodax", "itbit", "kkex", "kraken", "kucoin", "kuna", "lakebtc", "latoken", "lbank", "liquid", "livecoin", "luno", "lykke", "mercado", "mixcoins", "oceanex", "okcoin", "okex", "paymium", "poloniex", "rightbtc", "southxchange", "stex", "stronghold", "surbitcoin", "theocean", "therock", "tidebit", "tidex", "timex", "topq", "upbit", "vaultoro", "vbtc", "whitebit", "xbtce", "yobit", "zaif", "zb"}
+ccxtSupportedExchanges = {"_1btcxe", "acx", "anxpro", "aofex", "bcex", "bequant", "bibox", "bigone", "binance", "binanceje", "binanceus", "bit2c", "bitbank", "bitbay", "bitfinex", "bitfinex2", "bitflyer", "bitforex", "bithumb", "bitkk", "bitmart", "bitmax", "bitmex", "bitso", "bitstamp", "bitstamp1", "bittrex", "bitz", "bl3p", "bleutrade", "braziliex", "btcalpha", "btcbox", "btcmarkets", "btctradeim", "btctradeua", "btcturk", "buda", "bw", "bybit", "bytetrade", "cex", "chilebit", "coinbase", "coinbaseprime", "coinbasepro", "coincheck", "coinegg", "coinex", "coinfalcon", "coinfloor", "coingi", "coinmarketcap", "coinmate", "coinone", "coinspot", "coolcoin", "coss", "crex24", "deribit", "digifinex", "dsx", "exmo", "exx", "fcoin", "fcoinjp", "flowbtc", "foxbit", "ftx", "fybse", "gateio", "gemini", "hbtc", "hitbtc", "hitbtc", "hollaex", "huobipro", "huobiru", "ice3x", "idex", "independentreserve", "indodax", "itbit", "kkex", "kraken", "kucoin", "kuna", "lakebtc", "latoken", "lbank", "liquid", "livecoin", "luno", "lykke", "mercado", "mixcoins", "oceanex", "okcoin", "okex", "paymium", "poloniex", "rightbtc", "southxchange", "stex", "stronghold", "surbitcoin", "theocean", "therock", "tidebit", "tidex", "timex", "topq", "upbit", "vaultoro", "vbtc", "whitebit", "xbtce", "yobit", "zaif", "zb"}
 
 supportedStockExchanges = {
 	"IEXC": [

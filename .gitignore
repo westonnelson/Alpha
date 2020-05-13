@@ -5,5 +5,5 @@ __pycache__
 keys/
 env/
 charts/
-firebase_storage.py
+static_storage.py
 bot/assets/statistics

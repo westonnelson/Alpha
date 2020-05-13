@@ -93,6 +93,10 @@ class Utils(object):
 			elif raw in ["coinbase zrx"]: raw = "p zrx cbp"
 			elif raw in ["coinbase bat"]: raw = "p bat cbp"
 			elif raw in ["coinbase zec"]: raw = "p zec cbp"
+			elif raw in ["fut", "futs", "futures"]: raw = "p xbtm20, xbtu20"
+			elif raw in ["funding", "fun"]: raw = "p xbt fun, eth mex fun, xrpusd mex fun"
+			elif raw in ["oi", "ov"]: raw = "p xbt oi, eth mex oi, xrpusd mex oi"
+			elif raw in ["prem", "prems", "premiums"]: raw = "p btc prems"
 			elif raw.startswith("$") and not raw.startswith("$ "): raw = raw.replace("$", "mc ", 1)
 			elif raw.startswith("!convert "): raw = raw[1:]
 
@@ -102,31 +106,26 @@ class Utils(object):
 		elif raw in ["c btc vol"]: raw = "c bvol"
 		elif raw in ["c mcap"]: raw = "c total nv"
 		elif raw in ["c alt mcap"]: raw = "c total2 nv"
-		elif raw in ["fut", "futs", "futures"]: raw = "p xbtm20, xbtu20"
-		elif raw in ["funding", "fun"]: raw = "p xbt fun, eth mex fun, xrpusd mex fun"
 		elif raw in ["funding xbt", "fun xbt", "funding xbtusd", "fun xbtusd", "funding btc", "fun btc", "funding btcusd", "fun btcusd", "xbt funding", "xbt fun", "xbtusd funding", "xbtusd fun", "btc funding", "btc fun", "btcusd funding", "btcusd fun"]: raw = "p xbt funding"
 		elif raw in ["funding eth", "fun eth", "funding ethusd", "fun ethusd", "eth funding", "eth fun", "ethusd funding", "ethusd fun"]: raw = "p eth mex funding"
 		elif raw in ["funding xrp", "fun xrp", "funding xrpusd", "fun xrpusd", "xrp funding", "xrp fun", "xrpusd funding", "xrpusd fun"]: raw = "p xrpusd mex funding"
-		elif raw in ["oi", ".oi", "ov", ".ov"]: raw = "p xbt oi, eth mex oi, xrpusd mex oi"
-		elif raw in ["oi xbt", "oi xbtusd", ".oi xbt", ".oi xbtusd", "ov xbt", "ov xbtusd", ".ov xbt", ".ov xbtusd"]: raw = "p xbt oi"
-		elif raw in ["oi eth", "oi ethusd", ".oi eth", ".oi ethusd", "ov eth", "ov ethusd", ".ov eth", ".ov ethusd"]: raw = "p eth mex oi"
-		elif raw in ["oi xrp", "oi xrpusd", ".oi xrp", ".oi xrpusd", "ov xrp", "ov xrpusd", ".ov xrp", ".ov xrpusd"]: raw = "p xrpusd oi"
-		elif raw in ["prem", "prems", "premiums"]: raw = "p btc prems"
+		elif raw in ["oi xbt", "oi xbtusd", "ov xbt", "ov xbtusd"]: raw = "p xbt oi"
+		elif raw in ["oi eth", "oi ethusd", "ov eth", "ov ethusd"]: raw = "p eth mex oi"
+		elif raw in ["oi xrp", "oi xrpusd", "ov xrp", "ov xrpusd"]: raw = "p xrpusd oi"
 		elif raw in ["hmap"]: raw = "hmap change"
-		elif raw in ["p greed index", "p gindex", "p gi", "p fear index", "p findex", "p fi", "p fear greed index", "p fgindex", "p fgi", "p greed fear index", "p gfindex", "p gfi"]: raw = "p am fgi"
-		elif raw in ["c greed index", "c gindex", "c gi", "c fear index", "c findex", "c fi", "c fear greed index", "c fgindex", "c fgi", "c greed fear index", "c gfindex", "c gfi"]: raw = "c am fgi"
+		elif raw in ["p gindex", "p gi", "p findex", "p fi", "p fgindex", "p fgi", "p gfindex", "p gfi"]: raw = "p am fgi"
+		elif raw in ["c gindex", "c gi", "c findex", "c fi", "c fgindex", "c fgi", "c gfindex", "c gfi"]: raw = "c am fgi"
 		elif raw in ["c nvtr", "c nvt", "c nvt ratio", "c nvtratio"]: raw = "c wc nvt"
-		elif raw in ["c drbns", "c drbn", "c rbns", "c rbn", "c dribbon", "c difficulty ribbon", "c difficultyribbon"]: raw = "c wc drbn"
-		elif raw.startswith("hmap, ") or raw.endswith(", hmap"): raw = raw.replace("hmap, ", "hmap map, ").replace(", hmap", ", hmap change")
+		elif raw in ["c drbns", "c drbn", "c rbns", "c rbn", "c dribbon", "c difficultyribbon"]: raw = "c wc drbn"
 
 		raw = raw.replace("line break", "break")
 
 		return raw, shortcutUsed
 
 	@staticmethod
-	def seconds_until_cycle():
+	def seconds_until_cycle(every=15, offset=0):
 		n = datetime.datetime.now().astimezone(pytz.utc)
-		return (15 - n.second % 15) - ((time.time() * 1000) % 1000) / 1000
+		return (every - (n.second + offset) % every) - ((time.time() * 1000) % 1000) / 1000
 
 	@staticmethod
 	def get_highest_supported_timeframe(exchange, n):
@@ -142,7 +141,7 @@ class Utils(object):
 	@staticmethod
 	def get_accepted_timeframes(t):
 		acceptedTimeframes = []
-		for timeframe in ["1m", "5m", "10m", "15m", "20m", "30m", "1H", "2H", "3H", "4H", "6H", "8H", "12H", "1D"]:
+		for timeframe in ["1m", "2m", "3m", "5m", "10m", "15m", "20m", "30m", "1H", "2H", "3H", "4H", "6H", "8H", "12H", "1D"]:
 			if t.second % 60 == 0 and (t.hour * 60 + t.minute) * 60 % Utils.get_frequency_time(timeframe) == 0:
 				acceptedTimeframes.append(timeframe)
 		return acceptedTimeframes
@@ -162,6 +161,8 @@ class Utils(object):
 		elif t == "15m": return 900
 		elif t == "10m": return 600
 		elif t == "5m": return 300
+		elif t == "3m": return 180
+		elif t == "2m": return 120
 		elif t == "1m": return 60
 
 	@staticmethod
