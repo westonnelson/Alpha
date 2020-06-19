@@ -5,6 +5,7 @@ google-cloud-error-reporting>=0.33.0
 google-cloud-logging>=1.15.0
 google-cloud-firestore>=1.6.2
 google-cloud-storage>=1.28.1
+google-cloud-vision>=1.0.0
 google-assistant-sdk[samples]
 ccxt>=1.13.50
 iexfinance>=0.4.3
