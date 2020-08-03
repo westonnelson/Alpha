@@ -7,3 +7,4 @@ env/
 charts/
 static_storage.py
 bot/assets/statistics
+.vscode/

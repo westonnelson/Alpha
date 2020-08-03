@@ -39,6 +39,7 @@ from bot.engine.connections.coindar import Coindar
 from bot.engine.constructs.cryptography import EncryptionHandler
 from bot.engine.constructs.message import MessageRequest
 from bot.engine.constructs.ticker import Ticker
+from bot.engine.constructs.exchange import Exchange
 
 
 os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = "bot/keys/bf12e1515c25c7d8c0352f1413ab9a15.json"
@@ -68,7 +69,7 @@ class Alpha(discord.AutoShardedClient):
 	guildProperties = {}
 	databasePathMap = {}
 
-	statistics = {"alpha": 0, "alerts": 0, "c": 0, "p": 0, "v": 0, "d": 0, "hmap": 0, "mcap": 0, "news": 0, "mk": 0, "convert": 0, "paper": 0, "live": 0}
+	statistics = {"alpha": 0, "alerts": 0, "c": 0, "p": 0, "v": 0, "d": 0, "hmap": 0, "mcap": 0, "news": 0, "mk": 0, "convert": 0, "paper": 0, "live": 0, "flow": 0}
 	rateLimited = {}
 	lockedUsers = set()
 	usedPresetsCache = {}
@@ -79,6 +80,13 @@ class Alpha(discord.AutoShardedClient):
 	lastDatabaseUpdate = {}
 	databaseSanityCheck = {}
 
+	discordSettingsLink = None
+	accountsLink = None
+	discordPropertiesUsersLink = None
+	discordPropertiesGuildsLink = None
+	discordMessagesLink = None
+	dataserverParserIndexLink = None
+
 
 	# -------------------------
 	# Startup
@@ -87,10 +95,6 @@ class Alpha(discord.AutoShardedClient):
 	def prepare(self):
 		"""Prepares all required objects and fetches Alpha settings
 
-		Parameters
-		----------
-		for_guild : int, optional
-			Guild ID of a premium tier community
 		"""
 
 		t = datetime.datetime.now().astimezone(pytz.utc)
@@ -101,12 +105,12 @@ class Alpha(discord.AutoShardedClient):
 		self.topgg = topgg.DBLClient(client, ApiKeys.get_topgg_key())
 		self.logging = error_reporting.Client()
 
-		database.document("discord/settings").on_snapshot(self.update_alpha_settings)
-		database.collection("accounts").on_snapshot(self.update_account_properties)
-		database.collection("discord/properties/users").on_snapshot(self.update_unknown_user_properties)
-		database.collection("discord/properties/guilds").on_snapshot(self.update_guild_properties)
-		database.document("discord/messages").on_snapshot(self.send_pending_messages)
-		database.document("dataserver/parserIndex").on_snapshot(self.update_parser_index_cache)
+		self.discordSettingsLink = database.document("discord/settings").on_snapshot(self.update_alpha_settings)
+		self.accountsLink = database.collection("accounts").on_snapshot(self.update_account_properties)
+		self.discordPropertiesUsersLink = database.collection("discord/properties/users").on_snapshot(self.update_unknown_user_properties)
+		self.discordPropertiesGuildsLink = database.collection("discord/properties/guilds").on_snapshot(self.update_guild_properties)
+		self.discordMessagesLink = database.document("discord/messages").on_snapshot(self.send_pending_messages)
+		self.dataserverParserIndexLink = database.document("dataserver/parserIndex").on_snapshot(self.update_parser_index_cache)
 
 		statisticsData = database.document("discord/statistics").get().to_dict()
 		slice = "{}-{:02d}".format(t.year, t.month)
@@ -125,14 +129,12 @@ class Alpha(discord.AutoShardedClient):
 		print("[Startup]: parser initialization complete")
 
 		self.alphaGuild = client.get_guild(414498292655980583)
-		self.premiumRoles = [
-			discord.utils.get(self.alphaGuild.roles, id=651042597472698368), # base premium role
-			discord.utils.get(self.alphaGuild.roles, id=601518889469345810), # Alpha Bronze role
-			discord.utils.get(self.alphaGuild.roles, id=601519642070089748), # Alpha Silver role
-			discord.utils.get(self.alphaGuild.roles, id=484387309303758848), # Alpha Gold role
-			discord.utils.get(self.alphaGuild.roles, id=650353024954531840), # Indicator suite role
+		self.proRoles = [
+			discord.utils.get(self.alphaGuild.roles, id=484387309303758848), # Alpha Pro role
+			discord.utils.get(self.alphaGuild.roles, id=650353024954531840), # Indicator suite access role
 			discord.utils.get(self.alphaGuild.roles, id=606913869847199786), # Nitro Boosters role
-			discord.utils.get(self.alphaGuild.roles, id=663108866225209416)  # Contributors role
+			discord.utils.get(self.alphaGuild.roles, id=663108866225209416), # Contributors role
+			discord.utils.get(self.alphaGuild.roles, id=647824289923334155)  # Registered Alpha Account role
 		]
 
 		await self.update_system_status(t)
@@ -165,14 +167,10 @@ class Alpha(discord.AutoShardedClient):
 		"""
 
 		try:
-			# Alpha Premium messages
-			premiumChannel = client.get_channel(669917049895518208)
-			bronzeMessage = await premiumChannel.fetch_message(692432080919068673)
-			silverMessage = await premiumChannel.fetch_message(692432084798668800)
-			goldMessage = await premiumChannel.fetch_message(692432089324191804)
-			if bronzeMessage is not None: await bronzeMessage.edit(embed=discord.Embed(title="Alpha Bronze is a great introduction to Alpha's premium features. Bronze members get increased request limits, command presets, price alerts, access to Alpha's crypto paper trader, and access to our Market Breadth + Adaptive Presets indicator.", description="Learn more about Alpha Bronze on [our website](https://www.alphabotsystem.com/premium/bronze).", color=0x800000), suppress=False)
-			if silverMessage is not None: await silverMessage.edit(embed=discord.Embed(title="Alpha Silver gives you everything Bronze does and more. Not only do Silver members get everything Bronze members get, they also get access to Alpha's crypto live trader and to our custom Silver level indicator suite.", description="Learn more about Alpha Silver on [our website](https://www.alphabotsystem.com/premium/silver).", color=0xB7BACA), suppress=False)
-			if goldMessage is not None: await goldMessage.edit(embed=discord.Embed(title="Alpha Gold is the perfect choice for serious traders. Gold members get everything Bronze and Silver get, plus they also enjoy virtually unlimited trading through Discord, trading signals, and access to our full suite of custom indicators.", description="Learn more about Alpha Gold on [our website](https://www.alphabotsystem.com/premium/gold).", color=0xDD9909), suppress=False)
+			# Alpha Pro messages
+			proChannel = client.get_channel(669917049895518208)
+			proMessage = await proChannel.fetch_message(735492389845598238)
+			if proMessage is not None: await proMessage.edit(embed=discord.Embed(title="Alpha Pro is the perfect choice for serious traders. Pro members get increased request limits, command presets, price alerts and virtually unlimited trading through Alpha's Crypto Live Trader, and access to our full suite of custom indicators.", description="Learn more about Alpha Pro on [our website](https://www.alphabotsystem.com/pro).", color=0xB7BACA), suppress=False)
 
 			# Rules and ToS
 			faqAndRulesChannel = client.get_channel(601160698310950914)
@@ -462,9 +460,21 @@ class Alpha(discord.AutoShardedClient):
 
 		try:
 			updatedCache = updatedCache[0].to_dict()
-			if Parser.isCcxtCached: Parser.ccxtIndex = pickle.loads(zlib.decompress(updatedCache["CCXT"]))
-			if Parser.isCoinGeckoCached: Parser.coinGeckoIndex = pickle.loads(zlib.decompress(updatedCache["CoinGecko"]))
-			if Parser.isIexcCached: Parser.iexcIndex = pickle.loads(zlib.decompress(updatedCache["IEXC"]))
+			if Parser.isCcxtCached:
+				Parser.ccxtIndex = pickle.loads(zlib.decompress(updatedCache["CCXT"]))
+				completedTasks = set()
+				for platform in constants.supportedCryptoExchanges:
+					for exchange in constants.supportedCryptoExchanges[platform]:
+						if exchange not in completedTasks:
+							Parser.exchanges[exchange] = Exchange(exchange)
+							completedTasks.add(exchange)
+			if Parser.isCoinGeckoCached:
+				Parser.coinGeckoIndex = pickle.loads(zlib.decompress(updatedCache["CoinGecko"]))
+			if Parser.isIexcCached:
+				Parser.iexcIndex = pickle.loads(zlib.decompress(updatedCache["IEXC"]))
+				for _, stock in Parser.iexcIndex.items():
+					if stock["exchange"] not in Parser.exchanges:
+						Parser.exchanges[stock["exchange"]] = Exchange(stock["exchange"], isCrypto=False)
 		except Exception:
 			print(traceback.format_exc())
 			if config.inProduction: self.logging.report_exception()
@@ -478,58 +488,47 @@ class Alpha(discord.AutoShardedClient):
 			if config.inProduction:
 				for member in self.alphaGuild.members:
 					if member.id in self.accountProperties and "customer" in self.accountProperties[member.id]:
+						if self.proRoles[4] not in member.roles: await member.add_roles(self.proRoles[4])
+
 						if "plan" in self.accountProperties[member.id]["customer"]["personalSubscription"]:
-							if self.premiumRoles[5] in member.roles: # Nitro Boosters
+							if self.proRoles[2] in member.roles: # Nitro Boosters
 								if "username" in self.accountProperties[member.id]["oauth"]["tradingview"] and self.accountProperties[member.id]["oauth"]["tradingview"]["username"] != "":
-									if self.premiumRoles[4] not in member.roles: await member.add_roles(self.premiumRoles[4])
+									if self.proRoles[1] not in member.roles: await member.add_roles(self.proRoles[1])
 								else:
-									if self.premiumRoles[4] in member.roles: await member.remove_roles(self.premiumRoles[4])
-							elif self.premiumRoles[6] in member.roles: # Contributors role
+									if self.proRoles[1] in member.roles: await member.remove_roles(self.proRoles[1])
+							elif self.proRoles[3] in member.roles: # Contributors role
 								if "username" in self.accountProperties[member.id]["oauth"]["tradingview"] and self.accountProperties[member.id]["oauth"]["tradingview"]["username"] != "":
-									if self.premiumRoles[4] not in member.roles: await member.add_roles(self.premiumRoles[4])
+									if self.proRoles[1] not in member.roles: await member.add_roles(self.proRoles[1])
 								else:
-									if self.premiumRoles[4] in member.roles: await member.remove_roles(self.premiumRoles[4])
-							elif self.accountProperties[member.id]["customer"]["personalSubscription"]["plan"] == "plan_GcZGxEIAIDTYlN": # Alpha Bronze
-								if self.premiumRoles[0] not in member.roles or self.premiumRoles[1] not in member.roles or self.premiumRoles[2] in member.roles or self.premiumRoles[3] in member.roles:
-									await member.add_roles(self.premiumRoles[0], self.premiumRoles[1])
-									await member.remove_roles(self.premiumRoles[2], self.premiumRoles[3])
+									if self.proRoles[1] in member.roles: await member.remove_roles(self.proRoles[1])
+							elif self.accountProperties[member.id]["customer"]["personalSubscription"]["plan"] != "free": # Alpha Pro
+								if self.proRoles[0] not in member.roles:
+									await member.add_roles(self.proRoles[0])
 								if "username" in self.accountProperties[member.id]["oauth"]["tradingview"] and self.accountProperties[member.id]["oauth"]["tradingview"]["username"] != "":
-									if self.premiumRoles[4] not in member.roles: await member.add_roles(self.premiumRoles[4])
+									if self.proRoles[1] not in member.roles: await member.add_roles(self.proRoles[1])
 								else:
-									if self.premiumRoles[4] in member.roles: await member.remove_roles(self.premiumRoles[4])
-							elif self.accountProperties[member.id]["customer"]["personalSubscription"]["plan"] == "plan_GcZIXyYzYmTfVy": # Alpha Silver
-								if self.premiumRoles[0] not in member.roles or self.premiumRoles[1] in member.roles or self.premiumRoles[2] not in member.roles or self.premiumRoles[3] in member.roles:
-									await member.add_roles(self.premiumRoles[0], self.premiumRoles[2])
-									await member.remove_roles(self.premiumRoles[1], self.premiumRoles[3])
-								if "username" in self.accountProperties[member.id]["oauth"]["tradingview"] and self.accountProperties[member.id]["oauth"]["tradingview"]["username"] != "":
-									if self.premiumRoles[4] not in member.roles: await member.add_roles(self.premiumRoles[4])
-								else:
-									if self.premiumRoles[4] in member.roles: await member.remove_roles(self.premiumRoles[4])
-							elif self.accountProperties[member.id]["customer"]["personalSubscription"]["plan"] == "plan_GcZL9PWcEULzjn": # Alpha Gold
-								if self.premiumRoles[0] not in member.roles or self.premiumRoles[1] in member.roles or self.premiumRoles[2] in member.roles or self.premiumRoles[3] not in member.roles:
-									await member.add_roles(self.premiumRoles[0], self.premiumRoles[3])
-									await member.remove_roles(self.premiumRoles[1], self.premiumRoles[2])
-								if "username" in self.accountProperties[member.id]["oauth"]["tradingview"] and self.accountProperties[member.id]["oauth"]["tradingview"]["username"] != "":
-									if self.premiumRoles[4] not in member.roles: await member.add_roles(self.premiumRoles[4])
-								else:
-									if self.premiumRoles[4] in member.roles: await member.remove_roles(self.premiumRoles[4])
-							elif self.premiumRoles[0] in member.roles or self.premiumRoles[1] in member.roles or self.premiumRoles[2] in member.roles or self.premiumRoles[3] in member.roles or self.premiumRoles[4] in member.roles:
-								await member.remove_roles(self.premiumRoles[0], self.premiumRoles[1], self.premiumRoles[2], self.premiumRoles[3], self.premiumRoles[4])
+									if self.proRoles[1] in member.roles: await member.remove_roles(self.proRoles[1])
+							elif self.proRoles[0] in member.roles or self.proRoles[1] in member.roles:
+								await member.remove_roles(self.proRoles[0], self.proRoles[1])
 						else:
-							if self.premiumRoles[5] in member.roles: # Nitro Boosters
+							if self.proRoles[2] in member.roles: # Nitro Boosters
 								if "username" in self.accountProperties[member.id]["oauth"]["tradingview"] and self.accountProperties[member.id]["oauth"]["tradingview"]["username"] != "":
-									if self.premiumRoles[4] not in member.roles: await member.add_roles(self.premiumRoles[4])
+									if self.proRoles[1] not in member.roles: await member.add_roles(self.proRoles[1])
 								else:
-									if self.premiumRoles[4] in member.roles: await member.remove_roles(self.premiumRoles[4])
-							elif self.premiumRoles[6] in member.roles: # Contributors role
+									if self.proRoles[1] in member.roles: await member.remove_roles(self.proRoles[1])
+							elif self.proRoles[3] in member.roles: # Contributors role
 								if "username" in self.accountProperties[member.id]["oauth"]["tradingview"] and self.accountProperties[member.id]["oauth"]["tradingview"]["username"] != "":
-									if self.premiumRoles[4] not in member.roles: await member.add_roles(self.premiumRoles[4])
+									if self.proRoles[1] not in member.roles: await member.add_roles(self.proRoles[1])
 								else:
-									if self.premiumRoles[4] in member.roles: await member.remove_roles(self.premiumRoles[4])
-							elif self.premiumRoles[0] in member.roles or self.premiumRoles[1] in member.roles or self.premiumRoles[2] in member.roles or self.premiumRoles[3] in member.roles or self.premiumRoles[4] in member.roles:
-								await member.remove_roles(self.premiumRoles[0], self.premiumRoles[1], self.premiumRoles[2], self.premiumRoles[3], self.premiumRoles[4])
-					elif (self.premiumRoles[0] in member.roles or self.premiumRoles[1] in member.roles or self.premiumRoles[2] in member.roles or self.premiumRoles[3] in member.roles or self.premiumRoles[4] in member.roles) and self.premiumRoles[5] not in member.roles and self.premiumRoles[6] not in member.roles:
-						await member.remove_roles(self.premiumRoles[0], self.premiumRoles[1], self.premiumRoles[2], self.premiumRoles[3], self.premiumRoles[4])
+									if self.proRoles[1] in member.roles: await member.remove_roles(self.proRoles[1])
+							elif self.proRoles[0] in member.roles or self.proRoles[1] in member.roles:
+								await member.remove_roles(self.proRoles[0], self.proRoles[1])
+
+					elif (self.proRoles[0] in member.roles or self.proRoles[1] in member.roles) and self.proRoles[2] not in member.roles and self.proRoles[3] not in member.roles:
+						await member.remove_roles(self.proRoles[0], self.proRoles[1])
+
+					elif self.proRoles[4] in member.roles:
+						await member.remove_roles(self.proRoles[4])
 		except asyncio.CancelledError: pass
 		except Exception:
 			print(traceback.format_exc())
@@ -665,9 +664,9 @@ class Alpha(discord.AutoShardedClient):
 				if len(newBoosters) != 0 or len(missingBoosters) != 0:
 					database.document("discord/settings").set({"serverProperties": {"nitroBoosters": sorted(currentNitroBoosters)}}, merge=True)
 					for userId in newBoosters:
-						self.fusion.webhook_send(ApiKeys.get_events_webhook(), embeds=[discord.Embed(title="<@!{}> started boosting Alpha community guild.".format(userId), color=constants.colors["deep purple"])])
+						self.fusion.webhook_send(ApiKeys.get_events_webhook(), embeds=[discord.Embed(title="<@!{}> started boosting Alpha Discord community guild.".format(userId), color=constants.colors["deep purple"])])
 					for userId in missingBoosters:
-						self.fusion.webhook_send(ApiKeys.get_events_webhook(), embeds=[discord.Embed(title="<@!{}> is no longer boosting Alpha community guild.".format(userId), color=constants.colors["deep purple"])])
+						self.fusion.webhook_send(ApiKeys.get_events_webhook(), embeds=[discord.Embed(title="<@!{}> is no longer boosting Alpha Discord community guild.".format(userId), color=constants.colors["deep purple"])])
 		except asyncio.CancelledError: pass
 		except Exception:
 			print(traceback.format_exc())
@@ -755,10 +754,10 @@ class Alpha(discord.AutoShardedClient):
 			payload2, _ = await Processor.execute_data_server_request(messageRequest.authorId, "quote", request)
 			price2Text = "-" if payload2 is None else "{:,.0f}".format(payload2["raw"]["quotePrice"][0])
 
+			await client.change_presence(status=discord.Status.online, activity=discord.Activity(type=discord.ActivityType.watching, name="{} ₿ {} Ξ {}".format(fetchPairs[cycle][0], price1Text, price2Text)))
+
 			outputMessage, request = Processor.process_quote_arguments(messageRequest, [], tickerId="BTCUSD", platformQueue=["CoinGecko"])
 			_ = await Processor.execute_data_server_request(messageRequest.authorId, "quote", request)
-
-			await client.change_presence(status=discord.Status.online, activity=discord.Activity(type=discord.ActivityType.watching, name="{} ₿ {} Ξ {}".format(fetchPairs[cycle][0], price1Text, price2Text)))
 		except asyncio.CancelledError: pass
 		except Exception:
 			print(traceback.format_exc())
@@ -769,40 +768,36 @@ class Alpha(discord.AutoShardedClient):
 
 		"""
 
-		dataStream = {"raw": [656789117262233600], "id": [675460148038336543], "type": ["market strength"]}
+		streamChannel = client.get_channel(656789117262233600)
+		outgoingChannel = client.get_channel(675460148038336543)
 
-		if config.inProduction:
-			for i in range(len(dataStream["raw"])):
-				streamChannel = client.get_channel(dataStream["raw"][i])
-				try:
-					try: streamMessages = await streamChannel.history(limit=10).flatten() # None
-					except: continue
-					for message in reversed(streamMessages):
-						if dataStream["type"][i] == "market strength":
-							ticker, trendScore, momentumScore, volatilityScore, volumeScore = message.clean_content.lower().split(", ")[:5]
-							exchange, tickerId = ticker.split(":")
-							embed = discord.Embed(title=tickerId.upper(), color=constants.colors["deep purple"])
-							embed.add_field(name="Trend", value="{}".format(Utils.convert_score(int(trendScore))), inline=True)
-							embed.add_field(name="Momentum", value="{}".format(Utils.convert_score(int(momentumScore))), inline=True)
-							embed.add_field(name="Volatility", value="{}".format(Utils.convert_score(int(volatilityScore))), inline=True)
-							embed.add_field(name="Volume", value="{}".format(Utils.convert_score(int(volumeScore))), inline=True)
+		if config.inProduction and streamChannel is not None and outgoingChannel is not None:
+			try:
+				try: streamMessages = await streamChannel.history(limit=10).flatten() # None
+				except: return
+				for message in reversed(streamMessages):
+					ticker, trendScore, momentumScore, volatilityScore, volumeScore = message.clean_content.lower().split(", ")[:5]
+					exchange, tickerId = ticker.split(":")
+					embed = discord.Embed(title=tickerId.upper(), color=constants.colors["deep purple"])
+					embed.add_field(name="Trend", value="{}".format(Utils.convert_score(int(trendScore))), inline=True)
+					embed.add_field(name="Momentum", value="{}".format(Utils.convert_score(int(momentumScore))), inline=True)
+					embed.add_field(name="Volatility", value="{}".format(Utils.convert_score(int(volatilityScore))), inline=True)
+					embed.add_field(name="Volume", value="{}".format(Utils.convert_score(int(volumeScore))), inline=True)
 
-						if exchange in ["bitmex", "binance"]: parameters, tickerId = [exchange], tickerId.upper()
-						else: parameters, tickerId = [], "{}:{}".format(exchange.upper(), tickerId.upper())
+					if exchange in ["bitmex", "binance"]: parameters, tickerId = [exchange], tickerId.upper()
+					else: parameters, tickerId = [], "{}:{}".format(exchange.upper(), tickerId.upper())
 
-						outputMessage, request = Processor.process_chart_arguments(MessageRequest(authorId=401328409499664394, guildProperties=self.guildProperties[414498292655980583]), parameters, tickerId=tickerId, platformQueue=["TradingLite", "TradingView"])
-						request.set_current(timeframe=request.get_timeframes()[0])
-						chartName, chartText = await Processor.execute_data_server_request(401328409499664394, "chart", request)
-						file = None if chartName is None else discord.File("charts/" + chartName, chartName)
+					outputMessage, request = Processor.process_chart_arguments(MessageRequest(authorId=401328409499664394, guildProperties=self.guildProperties[414498292655980583]), parameters, tickerId=tickerId, platformQueue=["TradingLite", "TradingView"])
+					request.set_current(timeframe=request.get_timeframes()[0])
+					chartName, chartText = await Processor.execute_data_server_request(401328409499664394, "chart", request)
+					file = None if chartName is None else discord.File("charts/" + chartName, chartName)
 
-						outgoingChannel = client.get_channel(dataStream["id"][i])
-						await outgoingChannel.send(embed=embed, file=file)
-
-						await message.delete()
-				except asyncio.CancelledError: pass
-				except Exception:
-					print(traceback.format_exc())
-					if config.inProduction: self.logging.report_exception()
+					await outgoingChannel.send(embed=embed, file=file)
+					await message.delete()
+			except asyncio.CancelledError: pass
+			except Exception:
+				print(traceback.format_exc())
+				if config.inProduction: self.logging.report_exception()
 
 	def sanity_check(self):
 		for id in self.lastDatabaseUpdate:
@@ -872,7 +867,7 @@ class Alpha(discord.AutoShardedClient):
 								messageRequest.presetUsed = False
 								break
 
-				if messageRequest.is_bronze():
+				if messageRequest.is_pro():
 					if messageRequest.presetUsed:
 						if messageRequest.guildId != -1:
 							if messageRequest.guildId not in self.usedPresetsCache: self.usedPresetsCache[messageRequest.guildId] = []
@@ -905,8 +900,8 @@ class Alpha(discord.AutoShardedClient):
 							self.lockedUsers.discard(messageRequest.authorId)
 							messageRequest.content = "preset add {} {}".format(parsedPresets[0]["phrase"], parsedPresets[0]["shortcut"])
 				elif len(parsedPresets) != 0:
-					embed = discord.Embed(title="Presets are available to Alpha Premium users only.", description="Visit [our website](https://www.alphabotsystem.com/premium) to learn more about Alpha Premium and how to start your free trial.", color=0xDD9909)
-					embed.set_image(url="https://www.alphabotsystem.com/files/uploads/premium-hero.jpg")
+					embed = discord.Embed(title="Presets are available to Alpha Pro users only.", description="Visit [our website](https://www.alphabotsystem.com/pro) to learn more about Alpha Pro and how to start your free trial.", color=0xDD9909)
+					embed.set_image(url="https://www.alphabotsystem.com/files/uploads/pro-hero.jpg")
 					await message.channel.send(embed=embed)
 					return
 
@@ -961,14 +956,6 @@ class Alpha(discord.AutoShardedClient):
 				if message.author.bot: return
 
 				command = messageRequest.content.split(" ", 1)[1]
-				if command == "help":
-					try: await self.help(message, messageRequest)
-					except: pass
-					return
-				elif command == "invite":
-					try: await message.channel.send(content="https://discordapp.com/oauth2/authorize?client_id=401328409499664394&scope=bot&permissions=604372033")
-					except: pass
-					return
 				if message.author.id == 361916376069439490:
 					if command == "restart":
 						self.isBotReady = False
@@ -1011,8 +998,8 @@ class Alpha(discord.AutoShardedClient):
 							await self.help(message, messageRequest)
 						elif response == "ping":
 							await message.channel.send(content="Pong")
-						elif response == "premium":
-							await message.channel.send(content="Visit https://www.alphabotsystem.com/premium to learn more about Alpha Premium and how to start your free trial.")
+						elif response == "pro":
+							await message.channel.send(content="Visit https://www.alphabotsystem.com/pro to learn more about Alpha Pro and how to start your free trial.")
 						elif response == "invite":
 							await message.channel.send(content="https://discordapp.com/oauth2/authorize?client_id=401328409499664394&scope=bot&permissions=604372033")
 						elif response == "vote":
@@ -1030,26 +1017,26 @@ class Alpha(discord.AutoShardedClient):
 							await self.setup(message, messageRequest)
 						elif response == "settings":
 							pass
-					elif response is not None:
+					elif response is not None and response != "":
 						await message.channel.send(content=response)
-				elif messageRequest.content.startswith("toggle "):
+				elif messageRequest.content.startswith("set "):
 					if message.author.bot: return
 					if messageRequest.guildId == -1: return
 
-					if messageRequest.content == "toggle help":
+					if messageRequest.content == "set help":
 						embed = discord.Embed(title=":control_knobs: Functionality settings", description="Enable or disable certain Alpha Bot features.", color=constants.colors["light blue"])
-						embed.add_field(name=":sparkles: Enable TradingLite integration", value="```toggle tradinglite <on/off>```This setting only affects individual users.", inline=False)
-						embed.add_field(name=":crystal_ball: Enable or disable the assistant", value="```toggle assistant <on/off>```Admin permissions are required to execute this command.", inline=False)
-						embed.add_field(name=":globe_with_meridians: Change preferred market bias", value="```toggle bias <crypto/none>```This affects which market tickers are given priority when requesting charts. Current options are `crypto` and `none`. Admin permissions are required to execute this command.", inline=False)
-						embed.add_field(name=":pushpin: Enable or disable shortcuts", value="```toggle shortcuts <on/off>```Admin permissions are required to execute this command.", inline=False)
-						embed.add_field(name=":x: Enable or disable autodelete", value="```toggle autodelete <on/off>```Admin permissions are required to execute this command.", inline=False)
+						embed.add_field(name=":sparkles: Enable TradingLite integration", value="```set tradinglite <on/off>```This setting only affects individual users.", inline=False)
+						embed.add_field(name=":crystal_ball: Enable or disable the assistant", value="```set assistant <on/off>```Admin permissions are required to execute this command.", inline=False)
+						embed.add_field(name=":globe_with_meridians: Change preferred market bias", value="```set bias <crypto/none>```This affects which market tickers are given priority when requesting charts. Current options are `crypto` and `none`. Admin permissions are required to execute this command.", inline=False)
+						embed.add_field(name=":pushpin: Enable or disable shortcuts", value="```set shortcuts <on/off>```Admin permissions are required to execute this command.", inline=False)
+						embed.add_field(name=":x: Enable or disable autodelete", value="```set autodelete <on/off>```Admin permissions are required to execute this command.", inline=False)
 						embed.add_field(name=":tada: Alpha Discord guild", value="[Join now](https://discord.gg/GQeDE85)", inline=False)
-						embed.set_footer(text="Use \"toggle help\" to pull up this list again.")
+						embed.set_footer(text="Use \"set help\" to pull up this list again.")
 						await message.channel.send(embed=embed)
 					else:
-						requestSlices = re.split(', toggle | toggle |, ', messageRequest.content.split(" ", 1)[1])
+						requestSlices = re.split(', set | set |, ', messageRequest.content.split(" ", 1)[1])
 						for requestSlice in requestSlices:
-							await self.toggle(message, messageRequest, requestSlice)
+							await self.set_handler(message, messageRequest, requestSlice)
 				elif messageRequest.content.startswith(("alert ", "alerts ")):
 					self.fusion.process_active_user(messageRequest.authorId, "alerts")
 					if message.author.bot: return
@@ -1058,7 +1045,7 @@ class Alpha(discord.AutoShardedClient):
 						embed = discord.Embed(title=":bell: Price alerts", description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/guide).", color=constants.colors["light blue"])
 						await message.channel.send(embed=embed)
 					else:
-						if messageRequest.is_bronze():
+						if messageRequest.is_pro():
 							requestSlices = re.split(", alert | alert |, alerts | alerts |, ", messageRequest.content.split(" ", 1)[1])
 							if len(requestSlices) > messageRequest.get_limit() / 2:
 								await self.hold_up(message, messageRequest)
@@ -1066,10 +1053,10 @@ class Alpha(discord.AutoShardedClient):
 							for requestSlice in requestSlices:
 								await self.alert(message, messageRequest, requestSlice)
 								self.statistics["alerts"] += 1
-							await self.add_tip_message(message, "alerts")
+							await self.add_tip_message(message, messageRequest, "alerts")
 						else:
-							embed = discord.Embed(title="Price alerts are available to premium users only.", description="Visit [our website](https://www.alphabotsystem.com/premium) to learn more about Alpha Premium and how to start your free trial.", color=0xDD9909)
-							embed.set_image(url="https://www.alphabotsystem.com/files/uploads/premium-hero.jpg")
+							embed = discord.Embed(title="Price alerts are available to Pro users only.", description="Visit [our website](https://www.alphabotsystem.com/pro) to learn more about Alpha Pro and how to start your free trial.", color=0xDD9909)
+							embed.set_image(url="https://www.alphabotsystem.com/files/uploads/pro-hero.jpg")
 							await message.channel.send(embed=embed)
 				elif messageRequest.content.startswith("preset "):
 					if message.author.bot: return
@@ -1078,17 +1065,17 @@ class Alpha(discord.AutoShardedClient):
 						embed = discord.Embed(title=":pushpin: Command presets", description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/guide).", color=constants.colors["light blue"])
 						await message.channel.send(embed=embed)
 					else:
-						if messageRequest.is_bronze():
+						if messageRequest.is_pro():
 							requestSlices = re.split(", preset | preset", messageRequest.content.split(" ", 1)[1])
 							if len(requestSlices) > messageRequest.get_limit() / 2:
 								await self.hold_up(message, messageRequest)
 								return
 							for requestSlice in requestSlices:
 								await self.presets(message, messageRequest, requestSlice)
-							await self.add_tip_message(message, "preset")
+							await self.add_tip_message(message, messageRequest, "preset")
 						else:
-							embed = discord.Embed(title="Presets are available to premium users only.", description="Visit [our website](https://www.alphabotsystem.com/premium) to learn more about Alpha Premium and how to start your free trial.", color=0xDD9909)
-							embed.set_image(url="https://www.alphabotsystem.com/files/uploads/premium-hero.jpg")
+							embed = discord.Embed(title="Presets are available to Pro users only.", description="Visit [our website](https://www.alphabotsystem.com/pro) to learn more about Alpha Pro and how to start your free trial.", color=0xDD9909)
+							embed.set_image(url="https://www.alphabotsystem.com/files/uploads/pro-hero.jpg")
 							await message.channel.send(embed=embed)
 				elif messageRequest.content.startswith("c "):
 					self.fusion.process_active_user(messageRequest.authorId, "c")
@@ -1130,6 +1117,7 @@ class Alpha(discord.AutoShardedClient):
 								elif requestSlice.startswith("wc "): platform, requestSlice = "Woobull Charts", requestSlice[3:]
 								elif requestSlice.startswith("tl "): platform, requestSlice = "TradingLite", requestSlice[3:]
 								elif requestSlice.startswith("tv "): platform, requestSlice = "TradingView", requestSlice[3:]
+								elif requestSlice.startswith("gc "): platform, requestSlice = "GoCharting", requestSlice[3:]
 								elif requestSlice.startswith("fv "): platform, requestSlice = "Finviz", requestSlice[3:]
 
 								chartMessages, weight = await self.chart(message, messageRequest, requestSlice, platform)
@@ -1138,7 +1126,7 @@ class Alpha(discord.AutoShardedClient):
 
 								if messageRequest.authorId in self.rateLimited: self.rateLimited[messageRequest.authorId] += weight - 2
 								else: self.rateLimited[messageRequest.authorId] = weight - 2
-						await self.add_tip_message(message, "c")
+						await self.add_tip_message(message, messageRequest, "c")
 
 						self.statistics["c"] += totalWeight
 						await self.finish_request(message, messageRequest, totalWeight, sentMessages)
@@ -1177,7 +1165,7 @@ class Alpha(discord.AutoShardedClient):
 
 								if messageRequest.authorId in self.rateLimited: self.rateLimited[messageRequest.authorId] += weight - 2
 								else: self.rateLimited[messageRequest.authorId] = weight - 2
-						await self.add_tip_message(message, "p")
+						await self.add_tip_message(message, messageRequest, "p")
 
 						self.statistics["p"] += totalWeight
 						await self.finish_request(message, messageRequest, totalWeight, sentMessages)
@@ -1209,7 +1197,7 @@ class Alpha(discord.AutoShardedClient):
 								elif requestSlice.startswith("cx "): platform, requestSlice = "CCXT", requestSlice[3:]
 
 								await self.volume(message, messageRequest, requestSlice, platform)
-						await self.add_tip_message(message, "v")
+						await self.add_tip_message(message, messageRequest, "v")
 
 						self.statistics["v"] += totalWeight
 						await self.finish_request(message, messageRequest, totalWeight, [])
@@ -1245,7 +1233,7 @@ class Alpha(discord.AutoShardedClient):
 
 								if messageRequest.authorId in self.rateLimited: self.rateLimited[messageRequest.authorId] += weight - 2
 								else: self.rateLimited[messageRequest.authorId] = weight - 2
-						await self.add_tip_message(message, "d")
+						await self.add_tip_message(message, messageRequest, "d")
 
 						self.statistics["d"] += totalWeight
 						await self.finish_request(message, messageRequest, totalWeight, sentMessages)
@@ -1293,7 +1281,7 @@ class Alpha(discord.AutoShardedClient):
 
 								if messageRequest.authorId in self.rateLimited: self.rateLimited[messageRequest.authorId] += 2 - weight
 								else: self.rateLimited[messageRequest.authorId] = 2 - weight
-						await self.add_tip_message(message, "hmap")
+						await self.add_tip_message(message, messageRequest, "hmap")
 
 						self.statistics["hmap"] += totalWeight
 						await self.finish_request(message, messageRequest, totalWeight, sentMessages)
@@ -1321,7 +1309,7 @@ class Alpha(discord.AutoShardedClient):
 								break
 							else:
 								await self.mcap(message, messageRequest, requestSlice)
-						await self.add_tip_message(message, "mcap")
+						await self.add_tip_message(message, messageRequest, "mcap")
 
 						self.statistics["mcap"] += totalWeight
 						await self.finish_request(message, messageRequest, totalWeight, [])
@@ -1353,7 +1341,7 @@ class Alpha(discord.AutoShardedClient):
 								break
 							else:
 								await self.news(message, messageRequest, requestSlice)
-						await self.add_tip_message(message, "n")
+						await self.add_tip_message(message, messageRequest, "n")
 
 						self.statistics["news"] += totalWeight
 						await self.finish_request(message, messageRequest, totalWeight, [])
@@ -1381,7 +1369,7 @@ class Alpha(discord.AutoShardedClient):
 								break
 							else:
 								await self.markets(message, messageRequest, requestSlice)
-						await self.add_tip_message(message, "mk")
+						await self.add_tip_message(message, messageRequest, "mk")
 
 						self.statistics["mk"] += totalWeight
 						await self.finish_request(message, messageRequest, totalWeight, [])
@@ -1409,7 +1397,7 @@ class Alpha(discord.AutoShardedClient):
 								break
 							else:
 								await self.convert(message, messageRequest, requestSlice)
-						await self.add_tip_message(message, "convert")
+						await self.add_tip_message(message, messageRequest, "convert")
 
 						self.statistics["convert"] += totalWeight
 						await self.finish_request(message, messageRequest, totalWeight, [])
@@ -1438,16 +1426,16 @@ class Alpha(discord.AutoShardedClient):
 								await self.reset_paper_balance(message, messageRequest, requestSlice)
 							else:
 								await self.process_paper_trade(message, messageRequest, requestSlice)
-						await self.add_tip_message(message, "paper")
+						await self.add_tip_message(message, messageRequest, "paper")
 
 						self.statistics["paper"] += totalWeight
 						await self.finish_request(message, messageRequest, totalWeight, [])
-				elif messageRequest.content.startswith("flow ") and messageRequest.authorId in [361916376069439490, 164073578696802305, 390170634891689984, 281186392795512832, 283811354274562048]:
+				elif messageRequest.content.startswith("flow ") and messageRequest.guildId in [414498292655980583, 290278814217535489]:
 					self.fusion.process_active_user(messageRequest.authorId, "flow")
 					if message.author.bot: self.store_log(messageRequest)
 
 					if messageRequest.content == "flow help":
-						embed = discord.Embed(title=":microscope: Orderflow data", description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/guide).", color=constants.colors["light blue"])
+						embed = discord.Embed(title=":microscope: Options Orderflow Data", description="Beta guide is available in [this Google Docs file](https://docs.google.com/document/d/1rcteUr7NXYYz6prEwnrSUF95cfCS9vNo1Xb9d9xBn8E/edit?usp=sharing).", color=constants.colors["light blue"])
 						await message.channel.send(embed=embed)
 					else:
 						requestSlices = re.split(", flow | flow |, ", messageRequest.content.split(" ", 1)[1])
@@ -1466,7 +1454,7 @@ class Alpha(discord.AutoShardedClient):
 								break
 							else:
 								platform = None
-								if requestSlice.startswith("bb "): platform, requestSlice = "Black Box Stocks", requestSlice[3:]
+								if requestSlice.startswith("bb "): platform, requestSlice = "Bender ProfitBox", requestSlice[3:]
 
 								chartMessages, weight = await self.flow(message, messageRequest, requestSlice, platform)
 								sentMessages += chartMessages
@@ -1474,9 +1462,9 @@ class Alpha(discord.AutoShardedClient):
 
 								if messageRequest.authorId in self.rateLimited: self.rateLimited[messageRequest.authorId] += weight - 2
 								else: self.rateLimited[messageRequest.authorId] = weight - 2
-						await self.add_tip_message(message, "flow")
+						await self.add_tip_message(message, messageRequest, "flow")
 
-						# self.statistics["c"] += totalWeight
+						self.statistics["flow"] += totalWeight
 						await self.finish_request(message, messageRequest, totalWeight, sentMessages)
 				elif messageRequest.content.startswith("stream ") and messageRequest.authorId in [361916376069439490, 164073578696802305, 390170634891689984]:
 					if message.author.bot: return
@@ -1488,7 +1476,7 @@ class Alpha(discord.AutoShardedClient):
 						# embed.add_field(name=":pencil2: Stream setup", value="```stream set <type>```", inline=False)
 						# embed.add_field(name=":pencil2: Delete data stream", value="```stream delete```", inline=False)
 					else:
-						if messageRequest.is_bronze_guild():
+						if messageRequest.is_pro_guild():
 							requestSlices = re.split(", stream | stream |, ", messageRequest.content.split(" ", 1)[1])
 							if len(requestSlices) > messageRequest.get_limit() / 2:
 								await self.hold_up(message, messageRequest)
@@ -1496,15 +1484,15 @@ class Alpha(discord.AutoShardedClient):
 							for requestSlice in requestSlices:
 								await self.data_stream(message, messageRequest, requestSlice)
 								self.statistics["alerts"] += 1
-							await self.add_tip_message(message, "alerts")
+							await self.add_tip_message(message, messageRequest, "alerts")
 						else:
-							await message.channel.send(content="Data streams are available to premium guilds only", description="Visit [our website](https://www.alphabotsystem.com/premium) to learn more about Alpha Premium and how to start your free trial.")
+							await message.channel.send(content="Data streams are available to Pro guilds only", description="Visit [our website](https://www.alphabotsystem.com/pro) to learn more about Alpha Pro and how to start your free trial.")
 			elif messageRequest.content == "brekkeven" and messageRequest.authorId in [361916376069439490, 164073578696802305, 390170634891689984]:
 				self.fusion.process_active_user(messageRequest.authorId, "brekkeven")
 				if message.author.bot: return
 
 				await self.brekkeven(message, messageRequest)
-				await self.add_tip_message(message)
+				await self.add_tip_message(message, messageRequest)
 			else:
 				if messageRequest.guildProperties["settings"]["assistant"]["enabled"]:
 					response = await self.assistant.funnyReplies(messageRequest.content)
@@ -1637,7 +1625,7 @@ class Alpha(discord.AutoShardedClient):
 		embed.add_field(name=":tools: Cryptocurrency details", value="Detailed cryptocurrency information from CoinGecko. [View examples](https://www.alphabotsystem.com/guide/cryptocurrency-details).", inline=False)
 		embed.add_field(name=":yen: Cryptocurrency conversions", value="An easy way to convert between crypto and fiat rates. [View examples](https://www.alphabotsystem.com/guide/cryptocurrency-conversions).", inline=False)
 		embed.add_field(name=":pushpin: Command presets", value="Create personal presets for easy access to features you use the most. [View examples](https://www.alphabotsystem.com/guide/command-presets).", inline=False)
-		embed.add_field(name=":control_knobs: Functionality settings", value="Enable or disable certain Alpha Bot features. Type `toggle help` to learn more.", inline=False)
+		embed.add_field(name=":control_knobs: Functionality settings", value="Enable or disable certain Alpha Bot features. Type `set help` to learn more.", inline=False)
 		embed.add_field(name=":crystal_ball: Assistant", value="Pull up Wikipedia articles, calculate math problems and get answers to many other question. Start a message with `alpha` and continue with your question.", inline=False)
 		embed.add_field(name=":link: Official Alpha website", value="[alphabotsystem.com](https://www.alphabotsystem.com)", inline=True)
 		embed.add_field(name=":tada: Alpha Discord guild", value="[Join now](https://discord.gg/GQeDE85)", inline=True)
@@ -1649,13 +1637,15 @@ class Alpha(discord.AutoShardedClient):
 		else:
 			await message.channel.send(embed=embed)
 
-	async def add_tip_message(self, message, command=None):
+	async def add_tip_message(self, message, messageRequest, command=None):
 		if random.randint(0, 10) == 1:
-			c = command
-			while c == command: c, textSet = random.choice(list(constants.supportMessages.items()))
-			selectedTip = random.choice(textSet)
-			try: await message.channel.send(embed=discord.Embed(title=selectedTip[0], description=selectedTip[1], color=constants.colors["light blue"]))
-			except: pass
+			if command == "flow":
+				await message.channel.send(embed=discord.Embed(title="Get the full experience on BlackBox Stocks", description="BlackBox Stocks was created by high frequency traders to give you the upper hand in the market! They provide users with an ultra-powerful, real-time alert system that is comprehensive but easy to understand. [Sign up now!](http://staygreen.blackboxstocks.com/SH6K)", color=constants.colors["light blue"]))
+			elif messageRequest.guildId != 290278814217535489:
+				c = command
+				while c == command: c, textSet = random.choice(list(constants.supportMessages.items()))
+				selectedTip = random.choice(textSet)
+				await message.channel.send(embed=discord.Embed(title=selectedTip[0], description=selectedTip[1], color=constants.colors["light blue"]))
 
 	# -------------------------
 	# Settings
@@ -1664,7 +1654,7 @@ class Alpha(discord.AutoShardedClient):
 	async def setup(self, message, messageRequest):
 		try:
 			if messageRequest.guildId != -1:
-				if message.author.guild_permissions.administrator:
+				if message.author.guild_permissions.administrator or message.author.id == 361916376069439490:
 					if messageRequest.guildProperties is None or not messageRequest.guildProperties["settings"]["setup"]["completed"]:
 						self.lockedUsers.add(messageRequest.authorId)
 						await message.channel.trigger_typing()
@@ -1684,38 +1674,32 @@ class Alpha(discord.AutoShardedClient):
 									return True
 
 						accessibleChannels = len([e for e in message.guild.channels if message.guild.me.permissions_in(e).read_messages and e.type == discord.ChannelType.text])
-						embed = discord.Embed(title=":wrench: Setup", color=constants.colors["deep purple"])
-						embed.add_field(name=":scroll: Terms of service", value="By using Alpha Bot, you agree to Alpha [Terms of Service](https://www.alphabotsystem.com/terms-of-service) and [Privacy Policy](https://www.alphabotsystem.com/privacy-policy). For updates, please join the [official Alpha guild](https://discord.gg/GQeDE85).", inline=False)
-						embed.add_field(name=":eye: Access", value="Alpha Bot has read access in {} {}. All messages flowing through those channels are processed, but not stored nor analyzed for sentiment, trade, or similar data. Alpha stores anonymous statistical information. If you don't intend on using the bot in some of the channels, restrict its access by disabling its *read messages* permission. For transparency, our message handling system is [open-source](https://github.com/alphabotsystem/Alpha). What data is being used and how is explained in detail in our [Privacy Policy](https://www.alphabotsystem.com/privacy-policy).".format(accessibleChannels, "channel" if accessibleChannels == 1 else "channels"), inline=False)
-						embed.add_field(name=":grey_question: Help command", value="Use `alpha help` to learn more about what Alpha Bot can do.", inline=False)
-						embed.add_field(name=":control_knobs: Functionality settings", value="You can enable or disable certain Alpha features. Use `toggle help` to learn more.", inline=False)
-						embed.add_field(name=":link: Official Alpha website", value="[alphabotsystem.com](https://www.alphabotsystem.com)", inline=True)
-						embed.add_field(name=":tada: Alpha Discord guild", value="[Join now](https://discord.gg/GQeDE85)", inline=True)
-						embed.add_field(name=":link: Official Alpha Twitter", value="[@AlphaBotSystem](https://twitter.com/AlphaBotSystem)", inline=True)
-						embed.set_footer(text="Use \"alpha setup\" to pull up this list again. Prompt expires in 10 minutes.")
-						setupMessage = await message.channel.send(embed=embed)
+						embed = discord.Embed(title=":eye: Alpha Bot's Access", description="Alpha Bot has read access in {} {}. All messages flowing through those channels are processed, but not stored nor analyzed for sentiment, trade, or similar data. Alpha stores anonymous statistical information. If you don't intend on using the bot in some of the channels, restrict Alpha's access by disabling its `read messages` permission in channel permission overrides. For transparency, our message handling system is [open-source](https://github.com/alphabotsystem/Alpha). What data is being used and how is explained in detail in our [Privacy Policy](https://www.alphabotsystem.com/privacy-policy).".format(accessibleChannels, "channel" if accessibleChannels == 1 else "channels"), color=constants.colors["deep purple"])
+						await message.channel.send(embed=embed)
 
 						try:
-							embed = discord.Embed(title=":globe_with_meridians: Select a preferred market bias. Alpha Bot will use this information to prioritize certain tickers when processing requests. Current available options are `none` or `crypto`.", description="With crypto market bias, Alpha Bot will attempt to match people's requests with cryptocurrency tickers. Reply with `crypto` to choose this option.\nNo market bias is best suited for conventional markets like stocks and forex. Reply with `none` to chosse this option.\nYou can always change this option by using the `toggle` command.", color=constants.colors["pink"])
-							embed.set_footer(text="Use \"alpha setup\" to start again. Prompt expires in 10 minutes.")
-							await message.channel.send(embed=embed)
-							await client.wait_for('message', timeout=600.0, check=select_bias)
-						except Exception:
-							self.lockedUsers.discard(messageRequest.authorId)
-							embed = discord.Embed(title=":wrench: Setup", description="Process canceled", color=constants.colors["gray"])
-							try: await setupMessage.edit(embed=embed)
-							except: pass
-							return
-
-						try:
-							embed = discord.Embed(title=":white_check_mark: Reply with `agree` to confirm your  in order to complete the setup.", color=constants.colors["pink"])
-							embed.set_footer(text="Use \"alpha setup\" to start again. Prompt expires in 10 minutes.")
+							embed = discord.Embed(title=":white_check_mark: Reply with `agree` to confirm you have read and agree with the Term of Service and Privacy Policy.", description="If you have any questions or want to be notified about updates, please join the [official Alpha community guild](https://discord.gg/GQeDE85).", color=constants.colors["pink"])
+							embed.add_field(name=":scroll: Terms of Service", value="[View on our website](https://www.alphabotsystem.com/terms-of-service)", inline=True)
+							embed.add_field(name=":lock: Privacy Policy", value="[View on our website](https://www.alphabotsystem.com/privacy-policy)", inline=True)
+							embed.set_footer(text="Prompt expires in 10 minutes.")
 							await message.channel.send(embed=embed)
 							await client.wait_for('message', timeout=600.0, check=confirm_order)
 						except:
 							self.lockedUsers.discard(messageRequest.authorId)
-							embed = discord.Embed(title=":wrench: Setup", description="Process canceled", color=constants.colors["gray"])
-							try: await setupMessage.edit(embed=embed)
+							embed = discord.Embed(title=":wrench: Setup", description="Setup process was canceled.", color=constants.colors["gray"])
+							try: await message.channel.send(embed=embed)
+							except: pass
+							return
+
+						try:
+							embed = discord.Embed(title=":globe_with_meridians: Select a preferred market bias. Alpha Bot will use this information to prioritize certain tickers when processing requests. Current available options are `none` or `crypto`.", description="With crypto market bias, Alpha Bot will attempt to match people's requests with cryptocurrency tickers. Reply with `crypto` to choose this option.\nNo market bias is best suited for conventional markets like stocks and forex. Reply with `none` to chosse this option.\nYou can always change this option by using the `set` command.", color=constants.colors["pink"])
+							embed.set_footer(text="Prompt expires in 10 minutes.")
+							await message.channel.send(embed=embed)
+							await client.wait_for('message', timeout=600.0, check=select_bias)
+						except Exception:
+							self.lockedUsers.discard(messageRequest.authorId)
+							embed = discord.Embed(title=":wrench: Setup", description="Setup process was canceled.", color=constants.colors["gray"])
+							try: await message.channel.send(embed=embed)
 							except: pass
 							return
 
@@ -1724,7 +1708,12 @@ class Alpha(discord.AutoShardedClient):
 
 						database.document("discord/properties/guilds/{}".format(messageRequest.guildId)).set({"settings": {"setup": {"completed": True}}}, merge=True)
 						self.lastDatabaseUpdate[str(messageRequest.guildId)] = (time.time(), "Setup completion")
-						embed = discord.Embed(title=":wrench: Setup", description="Congratulations, the setup process is complete.", color=constants.colors["pink"])
+						embed = discord.Embed(title=":wrench: Setup Completed", description="You have completed the setup process. Here's some helpful information to help you get started!", color=constants.colors["deep purple"])
+						embed.add_field(name=":grey_question: Help command", value="Use `alpha help` to learn more about what Alpha Bot can do.", inline=False)
+						embed.add_field(name=":control_knobs: Functionality settings", value="You can enable or disable certain Alpha features. Use `set help` to learn more.", inline=False)
+						embed.add_field(name=":link: Official Alpha website", value="[alphabotsystem.com](https://www.alphabotsystem.com)", inline=True)
+						embed.add_field(name=":tada: Alpha community guild", value="[Join now](https://discord.gg/GQeDE85)", inline=True)
+						embed.add_field(name=":link: Official Alpha Twitter", value="[@AlphaBotSystem](https://twitter.com/AlphaBotSystem)", inline=True)
 						await message.channel.send(embed=embed)
 					else:
 						embed = discord.Embed(title="Setup process has already been completed in this guild.", color=constants.colors["gray"])
@@ -1741,7 +1730,7 @@ class Alpha(discord.AutoShardedClient):
 			if config.inProduction: self.logging.report_exception()
 			await self.unknown_error(message, messageRequest.authorId, report=True)
 
-	async def toggle(self, message, messageRequest, requestSlice):
+	async def set_handler(self, message, messageRequest, requestSlice):
 		try:
 			if requestSlice.startswith("assistant"):
 				if message.author.guild_permissions.administrator:
@@ -1752,7 +1741,7 @@ class Alpha(discord.AutoShardedClient):
 
 					if newVal is not None:
 						database.document("discord/properties/guilds/{}".format(messageRequest.guildId)).set({"settings": {"assistant": {"enabled": newVal}}}, merge=True)
-						self.lastDatabaseUpdate[str(messageRequest.guildId)] = (time.time(), "toggle Assistant")
+						self.lastDatabaseUpdate[str(messageRequest.guildId)] = (time.time(), "set Assistant")
 						await message.channel.send(embed=discord.Embed(title=responseText, color=constants.colors["pink"]))
 				elif messageRequest.guildId == -1:
 					embed = discord.Embed(title="Assistant settings are only available in guilds.", color=constants.colors["gray"])
@@ -1769,7 +1758,7 @@ class Alpha(discord.AutoShardedClient):
 
 					if newVal is not None:
 						database.document("discord/properties/guilds/{}".format(messageRequest.guildId)).set({"settings": {"messageProcessing": {"bias": newVal}}}, merge=True)
-						self.lastDatabaseUpdate[str(messageRequest.guildId)] = (time.time(), "toggle market bias")
+						self.lastDatabaseUpdate[str(messageRequest.guildId)] = (time.time(), "set market bias")
 						await message.channel.send(embed=discord.Embed(title=responseText, color=constants.colors["pink"]))
 				elif messageRequest.guildId == -1:
 					embed = discord.Embed(title="Market Bias settings are only available in guilds.", color=constants.colors["gray"])
@@ -1786,7 +1775,7 @@ class Alpha(discord.AutoShardedClient):
 
 					if newVal is not None:
 						database.document("discord/properties/guilds/{}".format(messageRequest.guildId)).set({"settings": {"messageProcessing": {"shortcuts": newVal}}}, merge=True)
-						self.lastDatabaseUpdate[str(messageRequest.guildId)] = (time.time(), "toggle shortcuts")
+						self.lastDatabaseUpdate[str(messageRequest.guildId)] = (time.time(), "set shortcuts")
 						await message.channel.send(embed=discord.Embed(title=responseText, color=constants.colors["pink"]))
 				elif messageRequest.guildId == -1:
 					embed = discord.Embed(title="Shortcut settings are only available in guilds.", color=constants.colors["gray"])
@@ -1803,7 +1792,7 @@ class Alpha(discord.AutoShardedClient):
 
 					if newVal is not None:
 						database.document("discord/properties/guilds/{}".format(messageRequest.guildId)).set({"settings": {"messageProcessing": {"autodelete": newVal}}}, merge=True)
-						self.lastDatabaseUpdate[str(messageRequest.guildId)] = (time.time(), "toggle autodelete")
+						self.lastDatabaseUpdate[str(messageRequest.guildId)] = (time.time(), "set autodelete")
 						await message.channel.send(embed=discord.Embed(title=responseText, color=constants.colors["pink"]))
 				elif messageRequest.guildId == -1:
 					embed = discord.Embed(title="Autodelete settings are only available in guilds.", color=constants.colors["gray"])
@@ -1815,11 +1804,11 @@ class Alpha(discord.AutoShardedClient):
 				newVal = None
 				responseText = ""
 				if requestSlice == "tradinglite off": newVal, responseText = False, "TradingLite charts will no longer appear by default, unless requested by using `c tl`."
-				elif requestSlice == "tradinglite on": newVal, responseText = True, "TradingLite charts will now appear whenever possible. You can still explicitly request TradingView charts with `c tv`. You can use `toggle tradinglite off` to turn the feature back off."
+				elif requestSlice == "tradinglite on": newVal, responseText = True, "TradingLite charts will now appear whenever possible. You can still explicitly request TradingView charts with `c tv`. You can use `set tradinglite off` to turn the feature back off."
 
 				if newVal is not None:
 					database.document(self.find_database_path(messageRequest.authorId)).set({"settings": {"charts": {"useTradingLite": newVal}}}, merge=True)
-					self.lastDatabaseUpdate[messageRequest.authorId] = (time.time(), "toggle TradingLite")
+					self.lastDatabaseUpdate[messageRequest.authorId] = (time.time(), "set TradingLite")
 					await message.channel.send(embed=discord.Embed(title=responseText, color=constants.colors["pink"]))
 		except asyncio.CancelledError: pass
 		except Exception:
@@ -1873,7 +1862,7 @@ class Alpha(discord.AutoShardedClient):
 						"level": request.get_numerical_parameters()[0],
 						"repeat": False
 					}
-					levelText = Utils.format_price(exchange.ccxt, ticker.symbol, request.get_numerical_parameters()[0])
+					levelText = Utils.format_price(exchange.properties, ticker.symbol, request.get_numerical_parameters()[0])
 
 					if databaseKey not in marketAlerts: marketAlerts[databaseKey] = []
 					for alert in marketAlerts[databaseKey]:
@@ -1907,10 +1896,10 @@ class Alpha(discord.AutoShardedClient):
 								for alert in messageRequest.accountProperties["marketAlerts"][id][databaseKey]:
 									hasAlerts = True
 									index += 1
-									base = Parser.exchanges[id].ccxt.markets[symbol]["base"]
-									quote = Parser.exchanges[id].ccxt.markets[symbol]["quote"]
+									base = Parser.exchanges[id].properties.markets[symbol]["base"]
+									quote = Parser.exchanges[id].properties.markets[symbol]["quote"]
 									tickerName = Ticker.generate_market_name(symbol, Parser.exchanges[id])
-									levelText = Utils.format_price(Parser.exchanges[id].ccxt, symbol, alert["level"])
+									levelText = Utils.format_price(Parser.exchanges[id].properties, symbol, alert["level"])
 
 									embed = discord.Embed(title="{} alert set for {} ({}) at {} {}".format(alert["action"].title(), tickerName, Parser.exchanges[id].name, levelText, quote), color=constants.colors["deep purple"])
 									embed.set_footer(text="Alert {}/{} on {} ● id: {}".format(index, totalAlertCount, Parser.exchanges[id].name, alert["id"]))
@@ -2306,11 +2295,8 @@ class Alpha(discord.AutoShardedClient):
 
 			await message.channel.trigger_typing()
 
-			try: coinThumbnail = Parser.coinGeckoIndex[base]["image"]
-			except: coinThumbnail = static_storage.icon_bw
-
 			try:
-				sentMessages.append(await message.channel.send(embed=self.coindar.upcoming_news(tickerId, coinThumbnail, tags)))
+				sentMessages.append(await message.channel.send(embed=self.coindar.upcoming_news(tickerId, static_storage.icon, tags)))
 			except Exception as e:
 				embed = discord.Embed(title="News data from Coindar isn't available.", color=constants.colors["gray"])
 				embed.set_author(name="Couldn't get news data", icon_url=static_storage.icon_bw)
@@ -2699,7 +2685,7 @@ class Alpha(discord.AutoShardedClient):
 		try:
 			arguments = requestSlice.split(" ")
 
-			outputMessage, request = Processor.process_chart_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platform=platform, platformQueue=["Black Box Stocks"])
+			outputMessage, request = Processor.process_chart_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platform=platform, platformQueue=["Bender ProfitBox"])
 			if outputMessage is not None:
 				if not messageRequest.is_muted() and outputMessage != "":
 					embed = discord.Embed(title=outputMessage, description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/guide/flow).", color=constants.colors["gray"])
@@ -2707,13 +2693,15 @@ class Alpha(discord.AutoShardedClient):
 					sentMessages.append(await message.channel.send(embed=embed))
 				return (sentMessages, len(sentMessages))
 
-			async with message.channel.typing():
-				chartName, chartText = await Processor.execute_data_server_request(messageRequest.authorId, "chart", request)
+			for timeframe in request.get_timeframes():
+				async with message.channel.typing():
+					request.set_current(timeframe=timeframe)
+					chartName, chartText = await Processor.execute_data_server_request(messageRequest.authorId, "chart", request)
 
 			if chartName is None:
-				errorMessage = "Requested orderflow chart for `{}` is not available.".format(request.get_ticker().name) if chartText is None else chartText
+				errorMessage = "Requested orderflow data for `{}` is not available.".format(request.get_ticker().name) if chartText is None else chartText
 				embed = discord.Embed(title=errorMessage, color=constants.colors["gray"])
-				embed.set_author(name="Chart not available", icon_url=static_storage.icon_bw)
+				embed.set_author(name="Data not available", icon_url=static_storage.icon_bw)
 				chartMessage = await message.channel.send(embed=embed)
 				sentMessages.append(chartMessage)
 				try: await chartMessage.add_reaction("☑")
@@ -2799,7 +2787,7 @@ def handle_exit():
 	print("\n[Shutdown]: timestamp: {}, description: closing tasks".format(Utils.get_current_date()))
 	client.loop.run_until_complete(client.topgg.close())
 	client.loop.run_until_complete(client.logout())
-	for t in asyncio.Task.all_tasks(loop=client.loop):
+	for t in asyncio.all_tasks(loop=client.loop):
 		if t.done():
 			try: t.exception()
 			except asyncio.InvalidStateError: pass
