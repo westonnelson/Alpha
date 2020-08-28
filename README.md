@@ -18,7 +18,7 @@ TradingView Premium is not available for the data provided by Alpha.
 
 **I'm reaching the chart rate limit. Can I increase it?**
 
-Yes, you can increase the limit by purchasing [Alpha premium](https://www.alphabotsystem.com/premium/ "Alpha premium").
+Yes, you can increase the limit by purchasing [Alpha Pro](https://www.alphabotsystem.com/pro "Alpha Pro").
 
 **Why does Alpha have specific permission?**
 
@@ -36,12 +36,12 @@ Check the permissions given to Alpha and make sure it's allowed to read messages
 
 **Alpha causes server spam. What can be done?**
 
-Your only option would be to enable auto-delete mode. To do that, type `toggle autodelete on` in your server (administrator privileges are required). If you want to disable it, type `toggle autodelete off`.
+Your only option would be to enable auto-delete mode. To do that, type `set autodelete on` in your server (administrator privileges are required). If you want to disable it, type `set autodelete off`.
 
 **I don't want the Assistant functionality. Can I disable it?**
 
-Yes, type `toggle assistant off` in your server (administrator privileges are required). If you want to enable it again, type `toggle assistant on`.
+Yes, type `set assistant off` in your server (administrator privileges are required). If you want to enable it again, type `set assistant on`.
 
 **Something interferes with another bot. How can I disable it?**
 
-Type `toggle shortcuts off` in your server (administrator privileges are required). If you want to enable it again, type `toggle shortcuts on`.
+Type `set shortcuts off` in your server (administrator privileges are required). If you want to enable it again, type `set shortcuts on`.
