@@ -3,7 +3,7 @@ aiohttp>=3.6.0,<3.7.0
 websockets>=6.0,!=7.0,!=8.0,!=8.0.1,<9.0
 google-cloud-error-reporting>=0.33.0
 google-cloud-logging>=1.15.0
-google-cloud-firestore>=1.6.2
+google-cloud-firestore>=1.9.0
 google-cloud-storage>=1.28.1
 google-cloud-vision>=1.0.0
 google-assistant-sdk[samples]
@@ -16,3 +16,4 @@ pytz>=2019.2
 dblpy>=0.3.3
 web3>=5.4.0
 pyzmq>=18.1.1
+stripe>=2.49.0

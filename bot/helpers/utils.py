@@ -22,7 +22,7 @@ class Utils(object):
 
 	@staticmethod
 	def num_of_decimal_places(exchange, price, precision):
-		if exchange.id in ["bitmex"]:
+		if exchange.id in ["bitmex", "ftx"]:
 			s = str(precision)
 			if "e" in s: return int(s.split("e-")[1])
 			elif not '.' in s: return 0
