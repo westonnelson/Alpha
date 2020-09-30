@@ -1,0 +1,78 @@
+version: '3.1'
+services:
+  data-server:
+    image: alphabotsystem/alpha-data-server
+    build:
+      context: ./
+      dockerfile: ./build/server/dockerfile
+    volumes:
+     - ./server:/usr/src/data-server
+     - ./libraries:/usr/src/data-server/libraries
+    ports:
+     - "6900:6900"
+    secrets:
+     - source: alpha-service-keys
+       target: alpha-service/key
+     - source: google-cloud-auth
+       target: google-cloud-auth/key
+
+  discord-bot:
+    image: alphabotsystem/alpha-discord-bot
+    build:
+      context: ./
+      dockerfile: ./build/discord/dockerfile
+    volumes:
+     - ./discord:/usr/src/discord-bot
+     - ./libraries:/usr/src/discord-bot/libraries
+    ports:
+     - "6910:6900"
+    secrets:
+     - source: alpha-service-keys
+       target: alpha-service/key
+     - source: google-cloud-auth
+       target: google-cloud-auth/key
+    depends_on:
+     - data-server
+
+  satellites:
+    image: alphabotsystem/alpha-satellites
+    build:
+      context: ./
+      dockerfile: ./build/satellites/dockerfile
+    volumes:
+      - ./satellites:/usr/src/satellites
+      - ./libraries:/usr/src/satellites/libraries
+    ports:
+      - "6911:6900"
+    secrets:
+      - source: alpha-service-keys
+        target: alpha-service/key
+      - source: alpha-satellite-keys
+        target: alpha-satellites/key
+      - source: google-cloud-auth
+        target: google-cloud-auth/key
+    depends_on:
+      - data-server
+
+  discord-manager:
+    image: alphabotsystem/alpha-discord-manager
+    build:
+      context: ./
+      dockerfile: ./build/manager/dockerfile
+    volumes:
+      - ./manager:/usr/src/discord-manager
+      - ./libraries:/usr/src/discord-manager/libraries
+    secrets:
+      - source: alpha-service-keys
+        target: alpha-service/key
+      - source: google-cloud-auth
+        target: google-cloud-auth/key
+
+
+secrets:
+  alpha-service-keys:
+    file: ./keys/credentials
+  alpha-satellite-keys:
+    file: ./keys/satellites
+  google-cloud-auth:
+    file: ./keys/gcloud_credentials.json

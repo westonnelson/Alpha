@@ -38,30 +38,11 @@ class Utils(object):
 		return digits if wholePart == "0" else max(digits - len(wholePart), 0)
 
 	@staticmethod
-	def convert_score(score):
-		if 6 <= score <= 10: return ":chart_with_upwards_trend: Extremely bullish"
-		elif 1 <= score <= 5: return ":chart_with_upwards_trend: Bullish"
-		elif -5 <= score <= -1: return ":chart_with_downwards_trend: Bearish"
-		elif -10 <= score <= -6: return ":chart_with_downwards_trend: Extremely bearish"
-		else: return "Neutral"
-
-	@staticmethod
-	def recursive_fill(settings, template):
-		for e in template:
-			if type(template[e]) is dict:
-				if e not in settings:
-					settings[e] = template[e].copy()
-				else:
-					Utils.recursive_fill(settings[e], template[e])
-			elif e not in settings:
-				settings[e] = template[e]
-
-	@staticmethod
 	def shortcuts(raw, allowsShortcuts):
 		initial = raw
 		if allowsShortcuts:
-			if raw in ["!help", "?help"]: raw = "a help"
-			elif raw in ["!invite", "?invite"]: raw = "a invite"
+			if raw in ["!help", "?help"]: raw = "alpha help"
+			elif raw in ["!invite", "?invite"]: raw = "alpha invite"
 			elif raw in ["mex"]: raw = "p xbt, eth mex, xrp mex, bch mex, ltc mex"
 			elif raw in ["mex xbt", "mex btc"]: raw = "p xbt"
 			elif raw in ["mex eth"]: raw = "p eth mex"
@@ -71,35 +52,10 @@ class Utils(object):
 			elif raw in ["mex eos"]: raw = "p eos mex"
 			elif raw in ["mex trx"]: raw = "p trx mex"
 			elif raw in ["mex ada"]: raw = "p ada mex"
-			elif raw in ["stamp"]: raw = "p btc bitstamp"
-			elif raw in ["stamp eth"]: raw = "p eth bitstamp"
-			elif raw in ["stamp xrp"]: raw = "p xrp bitstamp"
-			elif raw in ["stamp bch"]: raw = "p bch bitstamp"
-			elif raw in ["stamp ltc"]: raw = "p ltc bitstamp"
-			elif raw in ["stamp eos"]: raw = "p eos bitstamp"
-			elif raw in ["stamp trx"]: raw = "p trx bitstamp"
-			elif raw in ["stamp ada"]: raw = "p ada bitstamp"
-			elif raw in ["finex"]: raw = "p btc bitfinex"
-			elif raw in ["finex eth"]: raw = "p eth bitfinex"
-			elif raw in ["finex xrp"]: raw = "p xrp bitfinex"
-			elif raw in ["finex bch"]: raw = "p bch bitfinex"
-			elif raw in ["finex ltc"]: raw = "p ltc bitfinex"
-			elif raw in ["finex eos"]: raw = "p eos bitfinex"
-			elif raw in ["finex trx"]: raw = "p trx bitfinex"
-			elif raw in ["finex ada"]: raw = "p ada bitfinex"
-			elif raw in ["coinbase"]: raw = "p btc cbp"
-			elif raw in ["coinbase eth"]: raw = "p eth cbp"
-			elif raw in ["coinbase bch"]: raw = "p bch cbp"
-			elif raw in ["coinbase ltc"]: raw = "p ltc cbp"
-			elif raw in ["coinbase zrx"]: raw = "p zrx cbp"
-			elif raw in ["coinbase bat"]: raw = "p bat cbp"
-			elif raw in ["coinbase zec"]: raw = "p zec cbp"
 			elif raw in ["fut", "futs", "futures"]: raw = "p xbtu20, xbtz20"
 			elif raw in ["funding", "fun"]: raw = "p xbt fun, eth mex fun, xrp mex fun, bch mex fun, ltc mex fun"
 			elif raw in ["oi", "ov"]: raw = "p xbt oi, eth mex oi, xrp mex oi, bch mex oi, ltc mex fun"
 			elif raw in ["prem", "prems", "premiums"]: raw = "p btc prems"
-			elif raw.startswith("$") and not raw.startswith("$ "): raw = raw.replace("$", "mc ", 1)
-			elif raw.startswith("!convert "): raw = raw[1:]
 
 		shortcutUsed = initial != raw
 
@@ -132,17 +88,6 @@ class Utils(object):
 	def seconds_until_cycle(every=15, offset=0):
 		n = datetime.datetime.now().astimezone(pytz.utc)
 		return (every - (n.second + offset) % every) - ((time.time() * 1000) % 1000) / 1000
-
-	@staticmethod
-	def get_highest_supported_timeframe(exchange, n):
-		if exchange.timeframes is None: return ("1m", int(exchange.milliseconds() / 1000) - 60, 2)
-		dailyOpen = (int(exchange.milliseconds() / 1000) - (n.second + n.minute * 60 + n.hour * 3600)) * 1000
-		rolling24h = (int(exchange.milliseconds() / 1000) - 86400) * 1000
-		availableTimeframes = ["5m", "10m", "15m", "20m", "30m", "1H", "2H", "3H", "4H", "6H", "8H", "12H", "1D"]
-		for tf in availableTimeframes:
-			if tf.lower() in exchange.timeframes:
-				return tf, min(rolling24h, dailyOpen), math.ceil(int((exchange.milliseconds() - dailyOpen) / 1000) / Utils.get_frequency_time(tf))
-		return ("1m", int(exchange.milliseconds() / 1000) - 60, 2)
 
 	@staticmethod
 	def get_accepted_timeframes(t):
