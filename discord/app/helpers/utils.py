@@ -52,9 +52,9 @@ class Utils(object):
 			elif raw in ["mex eos"]: raw = "p eos mex"
 			elif raw in ["mex trx"]: raw = "p trx mex"
 			elif raw in ["mex ada"]: raw = "p ada mex"
-			elif raw in ["fut", "futs", "futures"]: raw = "p xbtu20, xbtz20"
+			elif raw in ["fut", "futs", "futures"]: raw = "p xbtz20, xbth21"
 			elif raw in ["funding", "fun"]: raw = "p xbt fun, eth mex fun, xrp mex fun, bch mex fun, ltc mex fun"
-			elif raw in ["oi", "ov"]: raw = "p xbt oi, eth mex oi, xrp mex oi, bch mex oi, ltc mex fun"
+			elif raw in ["oi", "ov"]: raw = "p xbt oi, eth mex oi, xrp mex oi, bch mex oi, ltc mex oi"
 			elif raw in ["prem", "prems", "premiums"]: raw = "p btc prems"
 
 		shortcutUsed = initial != raw
