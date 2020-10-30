@@ -54,6 +54,24 @@ services:
     depends_on:
       - data-server
 
+  twitter-bot:
+    image: alphabotsystem/alpha-twitter-bot
+    build:
+      context: ./
+      dockerfile: ./build/twitter/dockerfile
+    volumes:
+     - ./twitter:/usr/src/twitter-bot
+     - ./libraries:/usr/src/twitter-bot/libraries
+    ports:
+     - "6912:6900"
+    secrets:
+     - source: alpha-service-keys
+       target: alpha-service/key
+     - source: google-cloud-auth
+       target: google-cloud-auth/key
+    depends_on:
+     - data-server
+
   discord-manager:
     image: alphabotsystem/alpha-discord-manager
     build:

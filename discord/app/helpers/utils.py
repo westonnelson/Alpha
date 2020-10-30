@@ -40,49 +40,54 @@ class Utils(object):
 	@staticmethod
 	def shortcuts(raw, allowsShortcuts):
 		initial = raw
+		isDeprecated = False
 		if allowsShortcuts:
-			if raw in ["!help", "?help"]: raw = "alpha help"
-			elif raw in ["!invite", "?invite"]: raw = "alpha invite"
-			elif raw in ["mex"]: raw = "p xbt, eth mex, xrp mex, bch mex, ltc mex"
-			elif raw in ["mex xbt", "mex btc"]: raw = "p xbt"
-			elif raw in ["mex eth"]: raw = "p eth mex"
-			elif raw in ["mex xrp"]: raw = "p xrp mex"
-			elif raw in ["mex bch"]: raw = "p bch mex"
-			elif raw in ["mex ltc"]: raw = "p ltc mex"
-			elif raw in ["mex eos"]: raw = "p eos mex"
-			elif raw in ["mex trx"]: raw = "p trx mex"
-			elif raw in ["mex ada"]: raw = "p ada mex"
-			elif raw in ["fut", "futs", "futures"]: raw = "p xbtz20, xbth21"
-			elif raw in ["funding", "fun"]: raw = "p xbt fun, eth mex fun, xrp mex fun, bch mex fun, ltc mex fun"
-			elif raw in ["oi", "ov"]: raw = "p xbt oi, eth mex oi, xrp mex oi, bch mex oi, ltc mex oi"
-			elif raw in ["prem", "prems", "premiums"]: raw = "p btc prems"
+			if raw in ["mex"]: raw, isDeprecated = "p xbt, eth mex, xrp mex", True
+			elif raw in ["fut", "futs", "futures"]: raw, isDeprecated = "p futures", True
+			elif raw in ["funding", "fun"]: raw, isDeprecated = "p xbt fun, eth fun, xrp fun", True
+			elif raw in ["oi", "ov"]: raw, isDeprecated = "p xbt oi, eth oi, xrp oi", True
+			elif raw in ["mex xbt", "mex btc"]: raw, isDeprecated = "p xbt", True
+			elif raw in ["mex eth"]: raw, isDeprecated = "p eth mex", True
+			elif raw in ["mex xrp"]: raw, isDeprecated = "p xrp mex", True
+			elif raw in ["mex bch"]: raw, isDeprecated = "p bch mex", True
+			elif raw in ["mex ltc"]: raw, isDeprecated = "p ltc mex", True
+			elif raw in ["mex link"]: raw, isDeprecated = "p link mex", True
+			elif raw in ["mex eos"]: raw, isDeprecated = "p eos mex", True
+			elif raw in ["mex trx"]: raw, isDeprecated = "p trx mex", True
+			elif raw in ["mex ada"]: raw, isDeprecated = "p ada mex", True
+			elif raw in ["prem", "prems", "premiums"]: raw, isDeprecated = "p btc prems", True
+			elif raw in ["funding xbt", "fun xbt", "funding xbtusd", "fun xbtusd", "funding btc", "fun btc", "funding btcusd", "fun btcusd", "xbt funding", "xbt fun", "xbtusd funding", "xbtusd fun", "btc funding", "btc fun", "btcusd funding", "btcusd fun"]: raw, isDeprecated = "p xbt funding", True
+			elif raw in ["funding eth", "fun eth", "funding ethusd", "fun ethusd", "eth funding", "eth fun", "ethusd funding", "ethusd fun"]: raw, isDeprecated = "p eth funding", True
+			elif raw in ["funding xrp", "fun xrp", "funding xrpusd", "fun xrpusd", "xrp funding", "xrp fun", "xrpusd funding", "xrpusd fun"]: raw, isDeprecated = "p xrp funding", True
+			elif raw in ["funding bch", "fun bch", "funding bchusd", "fun bchusd", "bch funding", "bch fun", "bchusd funding", "bchusd fun"]: raw, isDeprecated = "p bch funding", True
+			elif raw in ["funding ltc", "fun ltc", "funding ltcusd", "fun ltcusd", "ltc funding", "ltc fun", "ltcusd funding", "ltcusd fun"]: raw, isDeprecated = "p ltc funding", True
+			elif raw in ["funding link", "fun link", "funding linkusd", "fun linkusd", "link funding", "link fun", "linkusd funding", "linkusd fun"]: raw, isDeprecated = "p link funding", True
+			elif raw in ["oi xbt", "oi xbtusd", "ov xbt", "ov xbtusd"]: raw, isDeprecated = "p xbt oi", True
+			elif raw in ["oi eth", "oi ethusd", "ov eth", "ov ethusd"]: raw, isDeprecated = "p eth oi", True
+			elif raw in ["oi xrp", "oi xrpusd", "ov xrp", "ov xrpusd"]: raw, isDeprecated = "p xrp oi", True
+			elif raw in ["oi bch", "oi bchusd", "ov bch", "ov bchusd"]: raw, isDeprecated = "p bch oi", True
+			elif raw in ["oi ltc", "oi ltcusd", "ov ltc", "ov ltcusd"]: raw, isDeprecated = "p ltc oi", True
+			elif raw in ["oi link", "oi linkusd", "ov link", "ov linkusd"]: raw, isDeprecated = "p link oi", True
 
 		shortcutUsed = initial != raw
 
-		if raw in ["c internals", "c internal", "c int"]: raw = "c uvol-dvol w, tick, dvn-decn, pcc d line"
+		if raw in ["!help", "?help"]: raw = "alpha help"
+		elif raw in ["!invite", "?invite"]: raw = "alpha invite"
+		elif raw in ["c internals", "c internal"]: raw = "c uvol-dvol w, tick, dvn-decn, pcc d line"
 		elif raw in ["c btc vol"]: raw = "c bvol"
 		elif raw in ["c mcap"]: raw = "c total nv"
 		elif raw in ["c alt mcap"]: raw = "c total2 nv"
-		elif raw in ["funding xbt", "fun xbt", "funding xbtusd", "fun xbtusd", "funding btc", "fun btc", "funding btcusd", "fun btcusd", "xbt funding", "xbt fun", "xbtusd funding", "xbtusd fun", "btc funding", "btc fun", "btcusd funding", "btcusd fun"]: raw = "p xbt funding"
-		elif raw in ["funding eth", "fun eth", "funding ethusd", "fun ethusd", "eth funding", "eth fun", "ethusd funding", "ethusd fun"]: raw = "p eth mex funding"
-		elif raw in ["funding xrp", "fun xrp", "funding xrpusd", "fun xrpusd", "xrp funding", "xrp fun", "xrpusd funding", "xrpusd fun"]: raw = "p xrp mex funding"
-		elif raw in ["funding bch", "fun bch", "funding bchusd", "fun bchusd", "bch funding", "bch fun", "bchusd funding", "bchusd fun"]: raw = "p bch mex funding"
-		elif raw in ["funding ltc", "fun ltc", "funding ltcusd", "fun ltcusd", "ltc funding", "ltc fun", "ltcusd funding", "ltcusd fun"]: raw = "p ltc mex funding"
-		elif raw in ["oi xbt", "oi xbtusd", "ov xbt", "ov xbtusd"]: raw = "p xbt oi"
-		elif raw in ["oi eth", "oi ethusd", "ov eth", "ov ethusd"]: raw = "p eth mex oi"
-		elif raw in ["oi xrp", "oi xrpusd", "ov xrp", "ov xrpusd"]: raw = "p xrp mex oi"
-		elif raw in ["oi bch", "oi bchusd", "ov bch", "ov bchusd"]: raw = "p bch mex oi"
-		elif raw in ["oi ltc", "oi ltcusd", "ov ltc", "ov ltcusd"]: raw = "p ltc mex oi"
 		elif raw in ["hmap"]: raw = "hmap change"
 		elif raw in ["flow"]: raw = "flow options"
 		elif raw in ["p gindex", "p gi", "p findex", "p fi", "p fgindex", "p fgi", "p gfindex", "p gfi"]: raw = "p am fgi"
 		elif raw in ["c gindex", "c gi", "c findex", "c fi", "c fgindex", "c fgi", "c gfindex", "c gfi"]: raw = "c am fgi"
 		elif raw in ["c nvtr", "c nvt", "c nvt ratio", "c nvtratio"]: raw = "c wc nvt"
 		elif raw in ["c drbns", "c drbn", "c rbns", "c rbn", "c dribbon", "c difficultyribbon"]: raw = "c wc drbn"
+		elif raw in ["p fut", "p futs", "p futures"]: raw = "p xbtz20, xbth21"
 
 		raw = raw.replace("line break", "break")
 
-		return raw, shortcutUsed
+		return raw, shortcutUsed, isDeprecated
 
 	@staticmethod
 	def seconds_until_cycle(every=15, offset=0):

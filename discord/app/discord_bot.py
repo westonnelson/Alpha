@@ -131,7 +131,6 @@ class Alpha(discord.AutoShardedClient):
 			proFlowMessage = await proChannel.fetch_message(752536312938102818)
 			proSatellitesMessage = await proChannel.fetch_message(752536318411800716)
 			proPresetsMessage = await proChannel.fetch_message(752536323218341938)
-			proIndicatorsMessage = await proChannel.fetch_message(752536327085490329)
 			proPricingMessage = await proChannel.fetch_message(752536331002839131)
 			introEmbed = discord.Embed(title="Professional tools. For every trader.", description="Command presets, price alerts, satellites for displaying metrics like price and volume, option order flow, the ability to place live trades, and more via Alpha help turn your Discord into the only the app you need as a trader. Upgrading to Pro means less time spent switching between apps, less money spent paying for different services, and always having your trading tools at your fingertips regardless of what device you are using. Learn more about Alpha Pro on [our website](https://www.alphabotsystem.com/pro).", color=0xB7BACA)
 			introEmbed.set_image(url="https://www.alphabotsystem.com/files/uploads/pro-hero.jpg")
@@ -143,8 +142,6 @@ class Alpha(discord.AutoShardedClient):
 			satellitesEmbed.set_image(url="https://firebasestorage.googleapis.com/v0/b/nlc-bot-36685.appspot.com/o/alpha%2Fassets%2Fdiscord%2Fpro-2.jpg?alt=media&token=6c28741f-27f1-4f7c-8c8c-e7be75c25177")
 			presetsEmbed = discord.Embed(title="A shortcut to things you use most, available everywhere.", description="Create custom presets to make talking to Alpha Bot easy. Any command you would give Alpha can be shortened by creating presets. This is great for calling a complex sequence of charts or charts with many indicators you use often. If you use the same set of parameters often, creating presets can save you time and energy. Learn more about Command Presets on [our website](https://www.alphabotsystem.com/pro/command-presets).", color=0xB7BACA)
 			presetsEmbed.set_image(url="https://firebasestorage.googleapis.com/v0/b/nlc-bot-36685.appspot.com/o/alpha%2Fassets%2Fdiscord%2Fpro-3.jpg?alt=media&token=7370aefb-003c-4ba8-a31e-96072a5ad91b")
-			indicatorsEmbed = discord.Embed(title="Alpha Indicator Suite spans the gambit and fits all trading styles, old and new.", description="Regardless of what type of trader you are, and regardless of the timeframe you are working with, our custom designed indicators are built to help give you an edge. Need help with trend determination, scalp trading, finding reversal opportunities, and more, Alpha’s Indicator Suite has you covered. Learn more about Alpha Indicator Suite on [our website](https://www.alphabotsystem.com/pro/indicator-suite).", color=0xB7BACA)
-			indicatorsEmbed.set_image(url="https://www.alphabotsystem.com/files/uploads/pro-4.jpg")
 			pricingEmbed = discord.Embed(title="Pay for the features you want to use. All with one subscription.", description="Learn more about Alpha Pro pricing on [our website](https://www.alphabotsystem.com/pro/pricing).", color=0xB7BACA)
 			pricingEmbed.set_image(url="https://www.alphabotsystem.com/files/uploads/alpha-pro.jpg")
 			if proIntroMessage is not None: await proIntroMessage.edit(embed=introEmbed, suppress=False)
@@ -152,7 +149,6 @@ class Alpha(discord.AutoShardedClient):
 			if proFlowMessage is not None: await proFlowMessage.edit(embed=flowEmbed, suppress=False)
 			if proSatellitesMessage is not None: await proSatellitesMessage.edit(embed=satellitesEmbed, suppress=False)
 			if proPresetsMessage is not None: await proPresetsMessage.edit(embed=presetsEmbed, suppress=False)
-			if proIndicatorsMessage is not None: await proIndicatorsMessage.edit(embed=indicatorsEmbed, suppress=False)
 			if proPricingMessage is not None: await proPricingMessage.edit(embed=pricingEmbed, suppress=False)
 
 			# Rules and ToS
@@ -218,10 +214,11 @@ class Alpha(discord.AutoShardedClient):
 			await self.update_guild_count()
 			if guild.id in self.guildProperties and self.guildProperties[guild.id]["settings"]["setup"]["connection"] is not None:
 				holdingId = self.guildProperties[guild.id]["settings"]["setup"]["connection"]
-				communityList = self.accountProperties[self.account_id_for(holdingId)]["customer"]["communitySubscriptions"]
-				if self.account_id_for(holdingId) is not None and str(guild.id) in communityList:
-					communityList.remove(str(guild.id))
-					database.document("accounts/{}".format(holdingId)).set({"customer": {"communitySubscriptions": communityList}}, merge=True)
+				if self.account_id_for(holdingId) is not None:
+					communityList = self.accountProperties[self.account_id_for(holdingId)]["customer"]["communitySubscriptions"]
+					if self.account_id_for(holdingId) is not None and str(guild.id) in communityList:
+						communityList.remove(str(guild.id))
+						database.document("accounts/{}".format(holdingId)).set({"customer": {"communitySubscriptions": communityList}}, merge=True)
 			database.document("discord/properties/guilds/{}".format(guild.id)).delete()
 		except Exception:
 			print(traceback.format_exc())
@@ -253,6 +250,7 @@ class Alpha(discord.AutoShardedClient):
 				timeframes = Utils.get_accepted_timeframes(t)
 
 				if "5m" in timeframes:
+					await client.loop.run_in_executor(self.executor, self.database_sanity_check)
 					await client.loop.run_in_executor(self.executor, self.update_satellite_bot_counts)
 					await self.update_online_member_count()
 					await self.update_system_status(t)
@@ -331,11 +329,11 @@ class Alpha(discord.AutoShardedClient):
 
 		try:
 			for change in changes:
+				guildId = int(change.document.id)
 				if change.type.name in ["ADDED", "MODIFIED"]:
-					self.guildProperties[int(change.document.id)] = change.document.to_dict()
+					self.guildProperties[guildId] = change.document.to_dict()
 				else:
-					self.guildProperties.pop(int(change.document.id))
-				
+					self.guildProperties.pop(guildId)			
 		except Exception:
 			print(traceback.format_exc())
 			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
@@ -353,7 +351,7 @@ class Alpha(discord.AutoShardedClient):
 			timestamp indicating time of change in the database
 		"""
 
-		if len(changes) == 0: return
+		if len(changes) == 0 or not os.environ["PRODUCTION_MODE"]: return
 		try:
 			while True:
 				if self.isBotReady: break
@@ -547,6 +545,27 @@ class Alpha(discord.AutoShardedClient):
 			print(traceback.format_exc())
 			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
 
+	def database_sanity_check(self):
+		if not os.environ["PRODUCTION_MODE"]: return
+		try:
+			guildIds = [g.id for g in client.guilds]
+			for guildId in guildIds:
+				if guildId not in self.guildProperties or "addons" not in self.guildProperties[guildId]:
+					database.document("discord/properties/guilds/{}".format(guildId)).set(MessageRequest.create_guild_settings(self.guildProperties.get(guildId, {})))
+			for guildId in list(self.guildProperties.keys()):
+				if guildId not in guildIds:
+					if self.guildProperties[guildId]["settings"]["setup"]["connection"] is not None:
+						holdingId = self.guildProperties[guildId]["settings"]["setup"]["connection"]
+						if self.account_id_for(holdingId) is not None:
+							communityList = self.accountProperties[self.account_id_for(holdingId)]["customer"]["communitySubscriptions"]
+							if self.account_id_for(holdingId) is not None and str(guildId) in communityList:
+								communityList.remove(str(guildId))
+								database.document("accounts/{}".format(holdingId)).set({"customer": {"communitySubscriptions": communityList}}, merge=True)
+					database.document("discord/properties/guilds/{}".format(guildId)).delete()
+		except Exception:
+			print(traceback.format_exc())
+			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+
 	def update_satellite_bot_counts(self):
 		try:
 			affectedAccountIds = []
@@ -595,25 +614,25 @@ class Alpha(discord.AutoShardedClient):
 		try:
 			affectedAccountIds = []
 			countMap = {}
-			adjustmentConstant = 0.3472222
-			for guildId in self.guildProperties:
-				if self.guildProperties[guildId]["addons"]["noads"]["enabled"]:
-					guild = client.get_guild(guildId)
-					if guild is None: continue
-					if not guild.chunked: await guild.chunk()
-					onlineCount = 0
-					for member in guild.members:
-						if member.status != discord.Status.offline:
-							onlineCount += 1
+			adjustmentConstant = 5 * 60 / 86400
+			for guild in client.guilds:
+				if self.guildProperties[guild.id]["addons"]["noads"]["enabled"]:
+					try:
+						result = await client.http.request(discord.http.Route("GET", "/guilds/{}/preview".format(guild.id), guild_id=guild.id))
+						onlineCount = result["approximate_presence_count"]
+						if onlineCount == 0: raise Exception("incorrect online count")
+					except Exception as e:
+						if os.environ["PRODUCTION_MODE"]: self.logging.report("Error getting guild preview: ({}) {}".format(e, guild.id))
+						continue
 
-					accountId = self.guildProperties[guildId]["addons"]["noads"]["connection"]
+					accountId = self.guildProperties[guild.id]["addons"]["noads"]["connection"]
 					if accountId not in affectedAccountIds: affectedAccountIds.append(accountId)
-					countMap[accountId] = countMap.get(accountId, []) + [(guildId, onlineCount)]
+					countMap[accountId] = countMap.get(accountId, []) + [(guild.id, onlineCount)]
 
-				elif "connection" in self.guildProperties[guildId]["addons"]["noads"]:
-					accountId = self.guildProperties[guildId]["addons"]["noads"]["connection"]
+				elif "connection" in self.guildProperties[guild.id]["addons"]["noads"]:
+					accountId = self.guildProperties[guild.id]["addons"]["noads"]["connection"]
 					if accountId not in affectedAccountIds: affectedAccountIds.append(accountId)
-					countMap[accountId] = countMap.get(accountId, []) + [(guildId, 0)]
+					countMap[accountId] = countMap.get(accountId, []) + [(guild.id, 0)]
 
 			for accountId in affectedAccountIds:
 				guildMap, onlineCount = [e[0] for e in countMap[accountId]], sum([e[1] for e in countMap[accountId]])
@@ -634,17 +653,15 @@ class Alpha(discord.AutoShardedClient):
 						subscription = stripe.Subscription.retrieve(accountProperties["customer"]["personalSubscription"]["subscription"])
 						stripe.SubscriptionItem.create_usage_record(subscription["items"]["data"][0]["id"], quantity=int(math.log2(estimatedCount) * 10), timestamp=int(time.time()))
 					else:
-						print("[Development]: Charging server {} held by {} for {} users".format(guildId, accountId, estimatedCount))
-				elif estimatedCount != 0:
+						print("[Development]: Charging account {} for {} users".format(accountId, estimatedCount))
+				elif onlineCount != 0:
 					estimatedCount = accountProperties["customer"]["addons"]["noads"] * (1 - adjustmentConstant) + onlineCount * adjustmentConstant
-				else:
-					estimatedCount = 0
 
 				if estimatedCount != accountProperties["customer"]["addons"].get("noads", 0):
 					if os.environ["PRODUCTION_MODE"]:
 						database.document("accounts/{}".format(accountId)).set({"customer": {"addons": {"noads": estimatedCount}}}, merge=True)
 					else:
-						print("[Development]: Estimated user count set to {} for server {} held by {}".format(estimatedCount, guildId, accountId))
+						print("[Development]: Estimated user count set to {} for account {}".format(estimatedCount, accountId))
 		except Exception:
 			print(traceback.format_exc())
 			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
@@ -782,7 +799,7 @@ class Alpha(discord.AutoShardedClient):
 							self.lockedUsers.discard(messageRequest.authorId)
 							messageRequest.content = "preset add {} {}".format(parsedPresets[0]["phrase"], parsedPresets[0]["shortcut"])
 
-			messageRequest.content, messageRequest.shortcutUsed = Utils.shortcuts(messageRequest.content, shortcutsEnabled)
+			messageRequest.content, messageRequest.shortcutUsed, isDeprecated = Utils.shortcuts(messageRequest.content, shortcutsEnabled)
 			isCommand = messageRequest.content.startswith(tuple(constants.commandWakephrases)) and not isSelf
 
 			if messageRequest.guildId != -1:
@@ -827,6 +844,10 @@ class Alpha(discord.AutoShardedClient):
 					elif messageRequest.guildProperties["settings"]["setup"]["connection"] is None and message.author.permissions_in(message.channel).administrator:
 						embed = discord.Embed(title="Unregistered server owners will be required to re-initiate the Alpha setup process starting November 1st.", description="To re-do the setup before the deadline, sign up for a free [Alpha Account](https://www.alphabotsystem.com/sign-up) and visit your Discord preferences.", color=0x000000)
 						await message.channel.send(embed=embed)
+
+			if messageRequest.shortcutUsed and isDeprecated:
+				embed = discord.Embed(title=":tools: Deprecation notice", description="We are sunsetting the shortcut you used on November 1st. We encurage you start using `{}` from now on.".format(messageRequest.content), color=constants.colors["red"])
+				await message.channel.send(embed=embed)
 
 			if messageRequest.content.startswith("a "):
 				if message.author.bot: return
@@ -876,7 +897,7 @@ class Alpha(discord.AutoShardedClient):
 						elif response == "pro":
 							await message.channel.send(content="Visit https://www.alphabotsystem.com/pro to learn more about Alpha Pro and how to start your free trial.")
 						elif response == "invite":
-							await message.channel.send(content="https://discordapp.com/oauth2/authorize?client_id=401328409499664394&scope=bot&permissions=604372033")
+							await message.channel.send(content="https://discord.com/oauth2/authorize?client_id=401328409499664394&scope=bot&permissions=604372032")
 						elif response == "vote":
 							await message.channel.send(content="https://top.gg/bot/401328409499664394/vote")
 						elif response == "referrals":
@@ -1094,7 +1115,7 @@ class Alpha(discord.AutoShardedClient):
 								platform = None
 								if requestSlice.startswith("am "): platform, requestSlice = "Alternative.me", requestSlice[3:]
 								elif requestSlice.startswith("cg "): platform, requestSlice = "CoinGecko", requestSlice[3:]
-								elif requestSlice.startswith("cx "): platform, requestSlice = "CCXT", requestSlice[3:]
+								elif requestSlice.startswith("cm "): platform, requestSlice = "CCXT", requestSlice[3:]
 								elif requestSlice.startswith("tm "): platform, requestSlice = "IEXC", requestSlice[3:]
 
 								chartMessages, weight = await self.price(message, messageRequest, requestSlice, platform)
@@ -1162,7 +1183,7 @@ class Alpha(discord.AutoShardedClient):
 						self.statistics["convert"] += totalWeight
 				elif messageRequest.content.startswith(("m ", "info", "mcap ", "mc ")):
 					if messageRequest.content.startswith(("mcap ", "mc ")):
-						embed = discord.Embed(title=":tools: Prefix change notice.", description="We are changing the prefix used for market information requests from `mcap`, `mc`, and `$` to `m` and `info`. Old prefixes will no longer work starting November 1st 2020.", color=constants.colors["red"])
+						embed = discord.Embed(title=":tools: Prefix change notice", description="We are changing the prefix used for market information requests from `mcap`, `mc`, and `$` to `m` and `info`. Old prefixes will no longer work starting November 1st 2020.", color=constants.colors["red"])
 						await message.channel.send(embed=embed)
 
 					if messageRequest.content in ["m help", "info help", "mcap help", "mc help"]:
@@ -1189,7 +1210,7 @@ class Alpha(discord.AutoShardedClient):
 
 						self.statistics["mcap"] += totalWeight
 						await self.finish_request(message, messageRequest, totalWeight, sentMessages)
-				elif messageRequest.content.startswith(("t ", "top")) and messageRequest.authorId == 361916376069439490:
+				elif messageRequest.content.startswith(("t ", "top")):
 					if messageRequest.content in ["t help", "top help"]:
 						embed = discord.Embed(title=":tools: Rankings", description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/guide/alpha-bot).", color=constants.colors["light blue"])
 						await message.channel.send(embed=embed)
@@ -1467,7 +1488,7 @@ class Alpha(discord.AutoShardedClient):
 			await message.channel.send(embed=embed)
 
 	async def add_tip_message(self, message, messageRequest, command=None):
-		if random.randint(0, 10) == 1 and not messageRequest.is_pro() and messageRequest.ads_disabled():
+		if random.randint(0, 5) == 1 and not messageRequest.ads_disabled():
 			c = command
 			while c == command: c, textSet = random.choice(list(constants.supportMessages.items()))
 			selectedTip = random.choice(textSet)
@@ -1904,7 +1925,7 @@ class Alpha(discord.AutoShardedClient):
 			outputMessage, request = Processor.process_quote_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platform=platform)
 			if outputMessage is not None:
 				if not messageRequest.is_muted() and outputMessage != "":
-					embed = discord.Embed(title=outputMessage, description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/guide/alpha-bot/rolling-volume).", color=constants.colors["gray"])
+					embed = discord.Embed(title=outputMessage, description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/guide/alpha-bot/volume).", color=constants.colors["gray"])
 					embed.set_author(name="Invalid argument", icon_url=static_storage.icon_bw)
 					sentMessages.append(await message.channel.send(embed=embed))
 				return (sentMessages, len(sentMessages))
@@ -1961,7 +1982,7 @@ class Alpha(discord.AutoShardedClient):
 
 			await message.channel.trigger_typing()
 
-			convertedValue = TickerParser.convert(base, quote, amount)
+			convertedValue = await Processor.process_conversion(messageRequest, base, quote, amount)
 
 			if convertedValue is None:
 				errorMessage = "Requested conversion is not available."
@@ -1971,7 +1992,6 @@ class Alpha(discord.AutoShardedClient):
 			else:
 				embed = discord.Embed(title="{} {} ≈ {:,.6f} {}".format(amount, base, round(convertedValue, 8), quote), color=constants.colors["deep purple"])
 				embed.set_author(name="Conversion", icon_url=static_storage.icon)
-				embed.set_footer(text="Prices on CoinGecko")
 				sentMessages.append(await message.channel.send(embed=embed))
 		except asyncio.CancelledError: pass
 		except Exception:
@@ -2388,20 +2408,20 @@ class Alpha(discord.AutoShardedClient):
 								totalValue += amount * 1
 						else:
 							if isFiat:
-								btcValue = TickerParser.convert(base, "BTC", amount)
+								btcValue = await Processor.process_conversion(messageRequest, base, "BTC", amount)
 								valueText = "{:,.6f} {}\nStable in fiat value".format(amount, base)
 								totalValue += amount
 							elif base == "BTC":
 								btcValue = amount
-								convertedValue = TickerParser.convert(base, exchangeBaseCurrency, amount)
+								convertedValue = await Processor.process_conversion(messageRequest, base, exchangeBaseCurrency, amount)
 								if convertedValue is not None:
 									valueText = "{:,.8f} {}\n≈ {:,.6f} {}".format(amount, base, convertedValue, exchangeBaseCurrency)
 									totalValue += convertedValue
 							else:
-								btcValue = TickerParser.convert(base, "BTC", amount)
-								convertedValue = TickerParser.convert(base, exchangeBaseCurrency, amount)
+								btcValue = await Processor.process_conversion(messageRequest, base, "BTC", amount)
+								convertedValue = await Processor.process_conversion(messageRequest, base, exchangeBaseCurrency, amount)
 								if convertedValue is not None:
-									valueText = "{:,.8f} {}\n{:,.8f} {}".format(amount, base, convertedValue, exchangeBaseCurrency)
+									valueText = "{:,.8f} {}\n{:,.8f} {}".format(messageRequest, amount, base, convertedValue, exchangeBaseCurrency)
 									totalValue += convertedValue
 
 						if btcValue is not None and (btcValue > 0.001 or btcValue != -1):
@@ -2412,8 +2432,8 @@ class Alpha(discord.AutoShardedClient):
 					openOrdersConvertedValue = 0
 					for order in paper[exchange.id]["openOrders"]:
 						if order["orderType"] in ["buy", "sell"]:
-							openOrdersBtcValue += TickerParser.convert(order["quote" if order["orderType"] == "buy" else "base"], "BTC", order["amount"] * (order["price"] if order["orderType"] == "buy" else 1))
-							openOrdersConvertedValue += TickerParser.convert(order["quote" if order["orderType"] == "buy" else "base"], exchangeBaseCurrency, order["amount"] * (order["price"] if order["orderType"] == "buy" else 1))
+							openOrdersBtcValue += await Processor.process_conversion(messageRequest, order["quote" if order["orderType"] == "buy" else "base"], "BTC", order["amount"] * (order["price"] if order["orderType"] == "buy" else 1))
+							openOrdersConvertedValue += await Processor.process_conversion(messageRequest, order["quote" if order["orderType"] == "buy" else "base"], exchangeBaseCurrency, order["amount"] * (order["price"] if order["orderType"] == "buy" else 1))
 							holdingAssets.add(order["base"])
 					if openOrdersConvertedValue > 0:
 						totalValue += openOrdersConvertedValue
@@ -2703,6 +2723,7 @@ if __name__ == "__main__":
 	intents.invites = False
 	intents.voice_states = False
 	intents.typing = False
+	intents.presences = False
 
 	client = Alpha(intents=intents, chunk_guilds_at_startup=False, activity=discord.Activity(type=discord.ActivityType.watching, name="alphabotsystem.com"))
 	print("[Startup]: object initialization complete")
