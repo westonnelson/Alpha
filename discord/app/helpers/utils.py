@@ -38,39 +38,7 @@ class Utils(object):
 		return digits if wholePart == "0" else max(digits - len(wholePart), 0)
 
 	@staticmethod
-	def shortcuts(raw, allowsShortcuts):
-		initial = raw
-		isDeprecated = False
-		if allowsShortcuts:
-			if raw in ["mex"]: raw, isDeprecated = "p xbt, eth mex, xrp mex", True
-			elif raw in ["fut", "futs", "futures"]: raw, isDeprecated = "p futures", True
-			elif raw in ["funding", "fun"]: raw, isDeprecated = "p xbt fun, eth fun, xrp fun", True
-			elif raw in ["oi", "ov"]: raw, isDeprecated = "p xbt oi, eth oi, xrp oi", True
-			elif raw in ["mex xbt", "mex btc"]: raw, isDeprecated = "p xbt", True
-			elif raw in ["mex eth"]: raw, isDeprecated = "p eth mex", True
-			elif raw in ["mex xrp"]: raw, isDeprecated = "p xrp mex", True
-			elif raw in ["mex bch"]: raw, isDeprecated = "p bch mex", True
-			elif raw in ["mex ltc"]: raw, isDeprecated = "p ltc mex", True
-			elif raw in ["mex link"]: raw, isDeprecated = "p link mex", True
-			elif raw in ["mex eos"]: raw, isDeprecated = "p eos mex", True
-			elif raw in ["mex trx"]: raw, isDeprecated = "p trx mex", True
-			elif raw in ["mex ada"]: raw, isDeprecated = "p ada mex", True
-			elif raw in ["prem", "prems", "premiums"]: raw, isDeprecated = "p btc prems", True
-			elif raw in ["funding xbt", "fun xbt", "funding xbtusd", "fun xbtusd", "funding btc", "fun btc", "funding btcusd", "fun btcusd", "xbt funding", "xbt fun", "xbtusd funding", "xbtusd fun", "btc funding", "btc fun", "btcusd funding", "btcusd fun"]: raw, isDeprecated = "p xbt funding", True
-			elif raw in ["funding eth", "fun eth", "funding ethusd", "fun ethusd", "eth funding", "eth fun", "ethusd funding", "ethusd fun"]: raw, isDeprecated = "p eth funding", True
-			elif raw in ["funding xrp", "fun xrp", "funding xrpusd", "fun xrpusd", "xrp funding", "xrp fun", "xrpusd funding", "xrpusd fun"]: raw, isDeprecated = "p xrp funding", True
-			elif raw in ["funding bch", "fun bch", "funding bchusd", "fun bchusd", "bch funding", "bch fun", "bchusd funding", "bchusd fun"]: raw, isDeprecated = "p bch funding", True
-			elif raw in ["funding ltc", "fun ltc", "funding ltcusd", "fun ltcusd", "ltc funding", "ltc fun", "ltcusd funding", "ltcusd fun"]: raw, isDeprecated = "p ltc funding", True
-			elif raw in ["funding link", "fun link", "funding linkusd", "fun linkusd", "link funding", "link fun", "linkusd funding", "linkusd fun"]: raw, isDeprecated = "p link funding", True
-			elif raw in ["oi xbt", "oi xbtusd", "ov xbt", "ov xbtusd"]: raw, isDeprecated = "p xbt oi", True
-			elif raw in ["oi eth", "oi ethusd", "ov eth", "ov ethusd"]: raw, isDeprecated = "p eth oi", True
-			elif raw in ["oi xrp", "oi xrpusd", "ov xrp", "ov xrpusd"]: raw, isDeprecated = "p xrp oi", True
-			elif raw in ["oi bch", "oi bchusd", "ov bch", "ov bchusd"]: raw, isDeprecated = "p bch oi", True
-			elif raw in ["oi ltc", "oi ltcusd", "ov ltc", "ov ltcusd"]: raw, isDeprecated = "p ltc oi", True
-			elif raw in ["oi link", "oi linkusd", "ov link", "ov linkusd"]: raw, isDeprecated = "p link oi", True
-
-		shortcutUsed = initial != raw
-
+	def shortcuts(raw):
 		if raw in ["!help", "?help"]: raw = "alpha help"
 		elif raw in ["!invite", "?invite"]: raw = "alpha invite"
 		elif raw in ["c internals", "c internal"]: raw = "c uvol-dvol w, tick, dvn-decn, pcc d line"
@@ -87,7 +55,7 @@ class Utils(object):
 
 		raw = raw.replace("line break", "break")
 
-		return raw, shortcutUsed, isDeprecated
+		return raw
 
 	@staticmethod
 	def seconds_until_cycle(every=15, offset=0):
