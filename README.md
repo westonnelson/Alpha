@@ -1,4 +1,4 @@
-[![Discord Bots](https://discordbots.org/api/widget/401328409499664394.svg)](https://discordbots.org/bot/401328409499664394)
+[![Discord Bots](https://top.gg/api/widget/401328409499664394.svg)](https://top.gg/bot/401328409499664394)
 
 # FAQ
 
