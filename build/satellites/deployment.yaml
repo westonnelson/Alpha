@@ -1,22 +1,22 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: discord-bot-production
+  name: satellite-production
   labels:
-    app: discord-bot
+    app: satellite
 spec:
-  replicas: 1
+  replicas: 41
   selector:
     matchLabels:
-      app: discord-bot
+      app: satellite
   template:
     metadata:
       labels:
-        app: discord-bot
+        app: satellite
     spec:
       containers:
-      - name: discord-bot
-        image: gcr.io/nlc-bot-36685/alpha-discord-bot
+      - name: satellite
+        image: gcr.io/nlc-bot-36685/alpha-satellites
         imagePullPolicy: Always
         env:
           - name: PRODUCTION_MODE
@@ -25,15 +25,18 @@ spec:
           - name: alpha-service-keys
             mountPath: /run/secrets/alpha-service
             readOnly: true
+          - name: alpha-satellite-keys
+            mountPath: /run/secrets/alpha-satellites
+            readOnly: true
           - name: google-cloud-auth
             mountPath: /run/secrets/google-cloud-auth
             readOnly: true
         resources:
           requests:
-            memory: "1048Mi"
-            cpu: "300m"
+            memory: "125Mi"
+            cpu: "5m"
         ports:
-          - containerPort: 6910
+          - containerPort: 6911
       volumes:
         - name: alpha-service-keys
           secret:
@@ -41,9 +44,17 @@ spec:
             items:
               - key: credentials
                 path: key
+        - name: alpha-satellite-keys
+          secret:
+            secretName: alpha-satellite-keys
+            items:
+              - key: satellites
+                path: key
         - name: google-cloud-auth
           secret:
             secretName: google-cloud-auth
             items:
               - key: gcloud_credentials.json
                 path: key
+      nodeSelector:
+        cloud.google.com/gke-nodepool: medium-performance-pool

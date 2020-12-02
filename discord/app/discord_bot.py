@@ -203,9 +203,9 @@ class Alpha(discord.AutoShardedClient):
 
 		try:
 			database.document("discord/properties/guilds/{}".format(guild.id)).set(MessageRequest.create_guild_settings({"properties": {"name": guild.name, "icon": guild.icon}}))
-			await self.update_guild_count()
 			if guild.id in constants.bannedGuilds:
 				await guild.leave()
+			self.topgg.post_guild_count()
 		except Exception:
 			print(traceback.format_exc())
 			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
@@ -229,6 +229,7 @@ class Alpha(discord.AutoShardedClient):
 						communityList.remove(str(guild.id))
 						database.document("accounts/{}".format(holdingId)).set({"customer": {"communitySubscriptions": communityList}}, merge=True)
 			database.document("discord/properties/guilds/{}".format(guild.id)).delete()
+			self.topgg.post_guild_count()
 		except Exception:
 			print(traceback.format_exc())
 			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
@@ -789,52 +790,55 @@ class Alpha(discord.AutoShardedClient):
 								break
 				
 				if messageRequest.presetUsed or len(parsedPresets) != 0:
-					if not messageRequest.is_pro():
+					if messageRequest.command_presets_available():
+						if messageRequest.presetUsed:
+							if messageRequest.guildId != -1:
+								if messageRequest.guildId not in self.usedPresetsCache: self.usedPresetsCache[messageRequest.guildId] = []
+								for preset in parsedPresets:
+									if preset not in self.usedPresetsCache[messageRequest.guildId]: self.usedPresetsCache[messageRequest.guildId].append(preset)
+								self.usedPresetsCache[messageRequest.guildId] = self.usedPresetsCache[messageRequest.guildId][-3:]
+
+							embed = discord.Embed(title="Running `{}` command from personal preset.".format(messageRequest.content), color=constants.colors["light blue"])
+							sentMessages.append(await message.channel.send(embed=embed))
+						elif len(parsedPresets) != 0:
+							embed = discord.Embed(title="Do you want to add `{}` preset to your account?".format(parsedPresets[0]["phrase"]), description="`{}` → `{}`".format(parsedPresets[0]["phrase"], parsedPresets[0]["shortcut"]), color=constants.colors["light blue"])
+							addPresetMessage = await message.channel.send(embed=embed)
+							self.lockedUsers.add(messageRequest.authorId)
+
+							def confirm_order(m):
+								if m.author.id == messageRequest.authorId:
+									response = ' '.join(m.clean_content.lower().split())
+									if response.startswith(("y", "yes", "sure", "confirm", "execute")): return True
+									elif response.startswith(("n", "no", "cancel", "discard", "reject")): raise Exception()
+
+							try:
+								this = await client.wait_for('message', timeout=60.0, check=confirm_order)
+							except:
+								self.lockedUsers.discard(messageRequest.authorId)
+								embed = discord.Embed(title="Canceled", description="~~Do you want to add `{}` preset to your account?~~".format(parsedPresets[0]["phrase"]), color=constants.colors["gray"])
+								try: await addPresetMessage.edit(embed=embed)
+								except: pass
+								return
+							else:
+								self.lockedUsers.discard(messageRequest.authorId)
+								messageRequest.content = "preset add {} {}".format(parsedPresets[0]["phrase"], parsedPresets[0]["shortcut"])
+
+					elif messageRequest.is_pro():
+						if not message.author.bot and message.author.permissions_in(message.channel).administrator:
+							embed = discord.Embed(title=":pushpin: Command Presets are disabled.", description="You can enable Command Presets feature for your account in [Discord Preferences](https://www.alphabotsystem.com/account/discord) or for the entire community in your [Communities Dashboard](https://www.alphabotsystem.com/communities/manage?id={}).".format(messageRequest.guildId), color=constants.colors["gray"])
+							embed.set_author(name="Command Presets", icon_url=static_storage.icon_bw)
+							await message.channel.send(embed=embed)
+						else:
+							embed = discord.Embed(title=":pushpin: Command Presets are disabled.", description="You can enable Command Presets feature for your account in [Discord Preferences](https://www.alphabotsystem.com/account/discord).", color=constants.colors["gray"])
+							embed.set_author(name="Command Presets", icon_url=static_storage.icon_bw)
+							await message.channel.send(embed=embed)
+						return
+
+					elif messageRequest.is_registered():
 						embed = discord.Embed(title=":gem: Command Presets are available to Alpha Pro users or communities for only $1.00 per month.", description="If you'd like to start your 14-day free trial, visit your [subscription page](https://www.alphabotsystem.com/account/subscription).", color=constants.colors["deep purple"])
 						embed.set_image(url="https://www.alphabotsystem.com/files/uploads/pro-hero.jpg")
 						await message.channel.send(embed=embed)
 						return
-					elif not messageRequest.command_presets_available():
-						if not message.author.bot and message.author.permissions_in(message.channel).administrator:
-							embed = discord.Embed(title=":gem: Command Presets are disabled.", description="You can enable Command Presets feature for your account in [Discord Preferences](https://www.alphabotsystem.com/account/discord) or for the entire community in your [Communities Dashboard](https://www.alphabotsystem.com/communities/manage?id={}).".format(messageRequest.guildId), color=constants.colors["gray"])
-							embed.set_author(name="Command Presets", icon_url=static_storage.icon_bw)
-							await message.channel.send(embed=embed)
-						else:
-							embed = discord.Embed(title=":gem: Command Presets are disabled.", description="You can enable Command Presets feature for your account in [Discord Preferences](https://www.alphabotsystem.com/account/discord).", color=constants.colors["gray"])
-							embed.set_author(name="Command Presets", icon_url=static_storage.icon_bw)
-							await message.channel.send(embed=embed)
-						return
-					elif messageRequest.presetUsed:
-						if messageRequest.guildId != -1:
-							if messageRequest.guildId not in self.usedPresetsCache: self.usedPresetsCache[messageRequest.guildId] = []
-							for preset in parsedPresets:
-								if preset not in self.usedPresetsCache[messageRequest.guildId]: self.usedPresetsCache[messageRequest.guildId].append(preset)
-							self.usedPresetsCache[messageRequest.guildId] = self.usedPresetsCache[messageRequest.guildId][-3:]
-
-						embed = discord.Embed(title="Running `{}` command from personal preset.".format(messageRequest.content), color=constants.colors["light blue"])
-						sentMessages.append(await message.channel.send(embed=embed))
-					elif len(parsedPresets) != 0:
-						embed = discord.Embed(title="Do you want to add `{}` preset to your account?".format(parsedPresets[0]["phrase"]), description="`{}` → `{}`".format(parsedPresets[0]["phrase"], parsedPresets[0]["shortcut"]), color=constants.colors["light blue"])
-						addPresetMessage = await message.channel.send(embed=embed)
-						self.lockedUsers.add(messageRequest.authorId)
-
-						def confirm_order(m):
-							if m.author.id == messageRequest.authorId:
-								response = ' '.join(m.clean_content.lower().split())
-								if response.startswith(("y", "yes", "sure", "confirm", "execute")): return True
-								elif response.startswith(("n", "no", "cancel", "discard", "reject")): raise Exception()
-
-						try:
-							this = await client.wait_for('message', timeout=60.0, check=confirm_order)
-						except:
-							self.lockedUsers.discard(messageRequest.authorId)
-							embed = discord.Embed(title="Canceled", description="~~Do you want to add `{}` preset to your account?~~".format(parsedPresets[0]["phrase"]), color=constants.colors["gray"])
-							try: await addPresetMessage.edit(embed=embed)
-							except: pass
-							return
-						else:
-							self.lockedUsers.discard(messageRequest.authorId)
-							messageRequest.content = "preset add {} {}".format(parsedPresets[0]["phrase"], parsedPresets[0]["shortcut"])
 
 			messageRequest.content = Utils.shortcuts(messageRequest.content)
 			isCommand = messageRequest.content.startswith(tuple(constants.commandWakephrases)) and not isSelf
@@ -1678,7 +1682,7 @@ class Alpha(discord.AutoShardedClient):
 		try:
 			arguments = requestSlice.split(" ")
 
-			if messageRequest.is_registered() or messageRequest.flow_available():
+			if messageRequest.flow_available():
 				outputMessage, request = Processor.process_chart_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platform=platform, platformQueue=["Alpha Flow"])
 				if outputMessage is not None:
 					if not messageRequest.is_muted() and messageRequest.is_registered() and outputMessage != "":
@@ -1705,12 +1709,6 @@ class Alpha(discord.AutoShardedClient):
 						sentMessages.append(chartMessage)
 						try: await chartMessage.add_reaction("☑")
 						except: pass
-
-				if not messageRequest.flow_available():
-					embed = discord.Embed(title=":microscope: Alpha Flow is going out of beta.", description="After a long beta period, Alpha Flow is finally ready to go out of beta. You're now able to purchase Alpha Flow for $15.00 per month. Transitionary period ends on November 25th. Visit your [Discord Preferences](https://www.alphabotsystem.com/account/discord) or your [Communities Dashboard](https://www.alphabotsystem.com/communities/manage?id={}) to enable it.".format(messageRequest.guildId), color=constants.colors["pink"])
-					embed.set_author(name="Alpha Flow", icon_url=static_storage.icon_bw)
-					warningMessage = await message.channel.send(embed=embed)
-					sentMessages.append(warningMessage)
 
 				autodeleteOverride = request.find_parameter_in_list("autoDeleteOverride", request.get_filters(), default=False)
 				messageRequest.autodelete = messageRequest.autodelete or autodeleteOverride
@@ -1869,7 +1867,8 @@ class Alpha(discord.AutoShardedClient):
 
 					for key, alert in messageRequest.accountProperties.get("marketAlerts", {}).items():
 						alertRequest = pickle.loads(zlib.decompress(alert["request"]))
-						if alertRequest.get_ticker() == ticker and alertRequest.currentPlatform == request.currentPlatform and alertRequest.get_exchange().id == exchange and alert["level"] == newAlert["level"]:
+						alertExchange = alertRequest.get_exchange()
+						if alertRequest.get_ticker() == ticker and alertRequest.currentPlatform == request.currentPlatform and ((alertExchange is None and exchange is None) or alertExchange.id == exchange.id) and alert["level"] == newAlert["level"]:
 							embed = discord.Embed(title="Price alert for {} ({}) at {} {} already exists.".format(ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote), color=constants.colors["gray"])
 							embed.set_author(name="Alert already exists", icon_url=static_storage.icon_bw)
 							sentMessages.append(await message.channel.send(embed=embed))

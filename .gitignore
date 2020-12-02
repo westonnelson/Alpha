@@ -1,12 +1,6 @@
 keys/
 libraries/
-manager/
-satellites/
 server/
-twitter/
-
-engine/
-static_storage.py
 
 *.pyc
 *.log

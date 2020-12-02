@@ -1,26 +1,23 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: discord-bot-production
+  name: discord-manager-development
   labels:
-    app: discord-bot
+    app: discord-manager
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: discord-bot
+      app: discord-manager
   template:
     metadata:
       labels:
-        app: discord-bot
+        app: discord-manager
     spec:
       containers:
-      - name: discord-bot
-        image: gcr.io/nlc-bot-36685/alpha-discord-bot
-        imagePullPolicy: Always
-        env:
-          - name: PRODUCTION_MODE
-            value: "1"
+      - name: discord-manager
+        image: alphabotsystem/alpha-discord-manager
+        imagePullPolicy: IfNotPresent
         volumeMounts:
           - name: alpha-service-keys
             mountPath: /run/secrets/alpha-service
@@ -28,12 +25,6 @@ spec:
           - name: google-cloud-auth
             mountPath: /run/secrets/google-cloud-auth
             readOnly: true
-        resources:
-          requests:
-            memory: "1048Mi"
-            cpu: "300m"
-        ports:
-          - containerPort: 6910
       volumes:
         - name: alpha-service-keys
           secret:

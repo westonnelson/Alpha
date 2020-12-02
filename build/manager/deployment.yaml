@@ -1,22 +1,22 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: discord-bot-production
+  name: discord-manager-production
   labels:
-    app: discord-bot
+    app: discord-manager
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: discord-bot
+      app: discord-manager
   template:
     metadata:
       labels:
-        app: discord-bot
+        app: discord-manager
     spec:
       containers:
-      - name: discord-bot
-        image: gcr.io/nlc-bot-36685/alpha-discord-bot
+      - name: discord-manager
+        image: gcr.io/nlc-bot-36685/alpha-discord-manager
         imagePullPolicy: Always
         env:
           - name: PRODUCTION_MODE
@@ -30,10 +30,8 @@ spec:
             readOnly: true
         resources:
           requests:
-            memory: "1048Mi"
-            cpu: "300m"
-        ports:
-          - containerPort: 6910
+            memory: "110Mi"
+            cpu: "20m"
       volumes:
         - name: alpha-service-keys
           secret:
