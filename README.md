@@ -4,10 +4,6 @@
 
 Unfortunately no, our data providers don't allow third-party indicators added to the charts. All built-in indicators and timeframes are already supported.
 
-**Can indicator parameters be changed?**
-
-Unfortunately no, our data providers don't allow that functionality.
-
 **Why doesn't Alpha use TradingView Premium?**
 
 TradingView Premium is not available for the data provided by Alpha.
