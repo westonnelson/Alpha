@@ -1,5 +1,3 @@
-[![Discord Bots](https://top.gg/api/widget/401328409499664394.svg)](https://top.gg/bot/401328409499664394)
-
 # FAQ
 
 **Can you add other indicators or timeframes to the bot?**
