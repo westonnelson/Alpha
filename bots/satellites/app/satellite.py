@@ -18,14 +18,9 @@ import traceback
 import discord
 from google.cloud import firestore, error_reporting
 
-from helpers.utils import Utils
-
-from TickerParser import TickerParser
 from Processor import Processor
 
-from TickerParser import Ticker
-from TickerParser import Exchange
-from TickerParser import supported
+from helpers.utils import Utils
 
 
 database = firestore.Client()
@@ -56,26 +51,18 @@ class Alpha(discord.Client):
 
 		"""
 
+		Processor.clientId = b"discord_satellite"
 		self.executor = concurrent.futures.ThreadPoolExecutor()
 		self.logging = error_reporting.Client()
 		self.timeOffset = randint(0, 30)
-		TickerParser.set_parser_cached()
 
 		self.discordPropertiesGuildsLink = database.collection("discord/properties/guilds").where("addons.satellites.enabled", "==", True).on_snapshot(self.update_guild_properties)
-		self.dataserverParserIndexLink = database.document("dataserver/parserIndex").on_snapshot(self.update_parser_index_cache)
 		print("[Startup]: database link activated")
 
 		time.sleep(self.timeOffset)
 		self.clientName = str(uuid.uuid4())
 		self.get_assigned_id()
-		print("[Startup]: Received task: {}/{}/{}".format(self.platform, self.exchange, self.tickerId))
-
-		if self.platform in supported.cryptoExchanges and self.exchange is not None:
-			supported.cryptoExchanges = {self.platform: ([self.exchange] if self.exchange == "bitmex" else [self.exchange, "bitmex"])}
-		else:
-			supported.cryptoExchanges = {"CCXT": ["bitmex"]}
-
-		TickerParser.refresh_parser_index(ccxt=True)
+		print("[Startup]: received task: {}/{}/{}".format(self.platform, self.exchange, self.tickerId))
 		print("[Startup]: parser initialization complete")
 
 	async def on_ready(self):
@@ -113,6 +100,7 @@ class Alpha(discord.Client):
 				self.isFree = self.tickerId in ["BTCUSD", "ETHUSD"] and self.platform == "CoinGecko"
 				print("[Shutdown]: Task missmatch, shutting down")
 				raise KeyboardInterrupt
+
 		except Exception:
 			print(traceback.format_exc())
 			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
@@ -133,41 +121,6 @@ class Alpha(discord.Client):
 		try:
 			for change in changes:
 				self.guildProperties[int(change.document.id)] = change.document.to_dict()
-		except Exception:
-			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
-
-	def update_parser_index_cache(self, updatedCache, changes, timestamp):
-		"""Updates parser index cache
-
-		Parameters
-		----------
-		updatedCache : [google.cloud.firestore_v1.document.DocumentSnapshot]
-			complete document snapshot
-		changes : [google.cloud.firestore_v1.watch.DocumentChange]
-			database changes in the sent snapshot
-		timestamp : int
-			timestamp indicating time of change in the database
-		"""
-
-		try:
-			updatedCache = updatedCache[0].to_dict()
-			if TickerParser.isCcxtCached:
-				TickerParser.ccxtIndex = pickle.loads(zlib.decompress(updatedCache["CCXT"]))
-				completedTasks = set()
-				for platform in supported.cryptoExchanges:
-					for exchange in supported.cryptoExchanges[platform]:
-						if exchange not in completedTasks:
-							if exchange not in TickerParser.exchanges: TickerParser.exchanges[exchange] = Exchange(exchange)
-							completedTasks.add(exchange)
-			if TickerParser.isCoinGeckoCached:
-				TickerParser.coinGeckoIndex = pickle.loads(zlib.decompress(updatedCache["CoinGecko"]))
-			if TickerParser.isIexcCached:
-				TickerParser.iexcStocksIndex = pickle.loads(zlib.decompress(updatedCache["IEXC Stocks"]))
-				TickerParser.iexcForexIndex = pickle.loads(zlib.decompress(updatedCache["IEXC Forex"]))
-				for _, stock in TickerParser.iexcStocksIndex.items():
-					if stock["exchange"] not in TickerParser.exchanges:
-						TickerParser.exchanges[stock["exchange"]] = Exchange(stock["exchange"])
 		except Exception:
 			print(traceback.format_exc())
 			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
@@ -194,7 +147,7 @@ class Alpha(discord.Client):
 						if os.environ["PRODUCTION_MODE"]: self.logging.report(outputMessage)
 						continue
 
-					payload, quoteText = await Processor.execute_data_server_request(client.user.id, "quote", request, timeout=10)
+					payload, quoteText = await Processor.execute_data_server_request("quote", request, timeout=10)
 					if payload is None or payload["quotePrice"] is None:
 						print("Requested price for `{}` is not available".format(request.get_ticker().name) if quoteText is None else quoteText)
 						continue
@@ -217,6 +170,7 @@ class Alpha(discord.Client):
 							except: continue
 
 					await client.change_presence(status=(discord.Status.online if payload["change"] >= 0 else discord.Status.dnd), activity=discord.Activity(type=discord.ActivityType.watching, name=statusText))
+
 			except asyncio.CancelledError: return
 			except Exception:
 				print(traceback.format_exc())
@@ -228,7 +182,7 @@ class Alpha(discord.Client):
 # -------------------------
 
 def handle_exit():
-	print("\n[Shutdown]: timestamp: {}, description: closing tasks".format(Utils.get_current_date()))
+	print("\n[Shutdown]: closing tasks")
 	client.loop.run_until_complete(client.logout())
 	for t in asyncio.all_tasks(loop=client.loop):
 		if t.done():

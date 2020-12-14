@@ -75,30 +75,25 @@ class Alpha(discord.AutoShardedClient):
 
 		"""
 
-		self.botStatus = [False, False, False, False, False, False]
+		self.botStatus = [False, False, False, False, False]
 		t = datetime.datetime.now().astimezone(pytz.utc)
 
 		atexit.register(self.cleanup)
-		Processor.clientId = "discord_alpha"
+		Processor.clientId = b"discord_alpha"
 		self.executor = concurrent.futures.ThreadPoolExecutor()
 		self.topgg = topgg.DBLClient(client, os.environ["TOPGG_KEY"])
 		self.logging = error_reporting.Client()
-		TickerParser.set_parser_cached()
 
 		self.discordSettingsLink = database.document("discord/settings").on_snapshot(self.update_alpha_settings)
 		self.accountsLink = database.collection("accounts").on_snapshot(self.update_account_properties)
 		self.discordPropertiesGuildsLink = database.collection("discord/properties/guilds").on_snapshot(self.update_guild_properties)
-		self.discordPropertiesUnregisteredUsersLink = database.collection("discord/properties/users").where("connection", "==", None).on_snapshot(self.update_unregistered_users_properties)
+		self.discordPropertiesUnregisteredUsersLink = database.collection("discord/properties/users").on_snapshot(self.update_unregistered_users_properties)
 		self.discordMessagesLink = database.collection("discord/properties/messages").on_snapshot(self.send_pending_messages)
-		self.dataserverParserIndexLink = database.document("dataserver/parserIndex").on_snapshot(self.update_parser_index_cache)
 
 		statisticsData = database.document("discord/statistics").get().to_dict()
 		slice = "{}-{:02d}".format(t.year, t.month)
 		for data in statisticsData[slice]:
 			self.statistics[data] = statisticsData[slice][data]
-		print("[Startup]: database link activated")
-
-		TickerParser.refresh_parser_index(ccxt=True)
 		print("[Startup]: parser initialization complete")
 
 	async def on_ready(self):
@@ -273,8 +268,6 @@ class Alpha(discord.AutoShardedClient):
 					await self.update_system_status(t)
 				if "1H" in timeframes:
 					await self.security_check()
-				if "1D" in timeframes:
-					await client.loop.run_in_executor(self.executor, TickerParser.refresh_parser_index, True)
 
 			except asyncio.CancelledError: return
 			except Exception:
@@ -359,6 +352,7 @@ class Alpha(discord.AutoShardedClient):
 				accountId = change.document.id
 
 				if change.type.name in ["ADDED", "MODIFIED"]:
+					if properties.get("connection") is None: continue
 					self.accountProperties[accountId] = properties
 					self.accountIdMap[accountId] = int(accountId)
 					self.accountIdMap[int(accountId)] = accountId
@@ -469,43 +463,6 @@ class Alpha(discord.AutoShardedClient):
 		"""
 
 		return self.accountIdMap.get(id, None)
-
-	def update_parser_index_cache(self, updatedCache, changes, timestamp):
-		"""Updates parser index cache
-
-		Parameters
-		----------
-		updatedCache : [google.cloud.firestore_v1.document.DocumentSnapshot]
-			complete document snapshot
-		changes : [google.cloud.firestore_v1.watch.DocumentChange]
-			database changes in the sent snapshot
-		timestamp : int
-			timestamp indicating time of change in the database
-		"""
-
-		try:
-			updatedCache = updatedCache[0].to_dict()
-			if TickerParser.isCcxtCached:
-				TickerParser.ccxtIndex = pickle.loads(zlib.decompress(updatedCache["CCXT"]))
-				completedTasks = set()
-				for platform in supported.cryptoExchanges:
-					for exchange in supported.cryptoExchanges[platform]:
-						if exchange not in completedTasks:
-							if exchange not in TickerParser.exchanges: TickerParser.exchanges[exchange] = Exchange(exchange)
-							completedTasks.add(exchange)
-			if TickerParser.isCoinGeckoCached:
-				TickerParser.coinGeckoIndex = pickle.loads(zlib.decompress(updatedCache["CoinGecko"]))
-			if TickerParser.isIexcCached:
-				TickerParser.iexcStocksIndex = pickle.loads(zlib.decompress(updatedCache["IEXC Stocks"]))
-				TickerParser.iexcForexIndex = pickle.loads(zlib.decompress(updatedCache["IEXC Forex"]))
-				for _, stock in TickerParser.iexcStocksIndex.items():
-					if stock["exchange"] not in TickerParser.exchanges:
-						TickerParser.exchanges[stock["exchange"]] = Exchange(stock["exchange"])
-			self.botStatus[5] = True
-
-		except Exception:
-			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
 
 
 	# -------------------------
@@ -893,7 +850,6 @@ class Alpha(discord.AutoShardedClient):
 						settings = copy.deepcopy(messageRequest.accountProperties)
 						settings.pop("apiKeys", None)
 						settings.pop("commandPresets", None)
-						settings.pop("marketAlerts", None)
 						if "oauth" in settings: settings["oauth"]["discord"].pop("accessToken", None)
 						settings.pop("paperTrader", None)
 						await message.author.send(content="```json\n{}\n```".format(json.dumps(settings, indent=3, sort_keys=True)))
@@ -1435,15 +1391,16 @@ class Alpha(discord.AutoShardedClient):
 						if footerText.startswith("Alert") and " ● id: " in footerText:
 							alertId = footerText.split(" ● id: ")[1]
 							accountId = self.account_id_for(user.id)
-							marketAlerts = self.accountProperties[accountId].get("marketAlerts", {})
-
-							for key, alert in marketAlerts.items():
-								if alertId == key:
-									if "customer" in self.accountProperties[accountId]:
-										database.document("accounts/{}".format(self.account_id_for(user.id))).update({"marketAlerts.`{}`".format(key): firestore.DELETE_FIELD})
-									else:
-										database.document("discord/properties/users/{}".format(user.id)).update({"marketAlerts.`{}`".format(key): firestore.DELETE_FIELD})
-									break
+							marketAlerts = self.accountProperties[accountId].get("marketAlerts", [])
+							
+							try:
+								marketAlerts.remove(alertId)
+								database.document("details/marketAlerts/{}/{}".format(accountId, alertId)).delete()
+								if "customer" in self.accountProperties[accountId]:
+									database.document("accounts/{}".format(self.account_id_for(user.id))).set({"marketAlerts": marketAlerts}, merge=True)
+								else:
+									database.document("discord/properties/users/{}".format(user.id)).set({"marketAlerts": marketAlerts}, merge=True)
+							except: pass
 
 							embed = discord.Embed(title="Alert deleted", color=constants.colors["gray"])
 							embed.set_footer(text=footerText)
@@ -1651,7 +1608,7 @@ class Alpha(discord.AutoShardedClient):
 			for timeframe in request.get_timeframes():
 				async with message.channel.typing():
 					request.set_current(timeframe=timeframe)
-					payload, chartText = await Processor.execute_data_server_request(messageRequest.authorId, "chart", request)
+					payload, chartText = await Processor.execute_data_server_request("chart", request)
 
 				if payload is None:
 					errorMessage = "Requested chart for `{}` is not available.".format(request.get_ticker().name) if chartText is None else chartText
@@ -1662,7 +1619,7 @@ class Alpha(discord.AutoShardedClient):
 					try: await chartMessage.add_reaction("☑")
 					except: pass
 				else:
-					chartMessage = await message.channel.send(content=chartText, file=discord.File(payload, "{:.0f}-{}-{}.png".format(time.time() * 1000, messageRequest.authorId, random.randint(1000, 9999))))
+					chartMessage = await message.channel.send(content=chartText, file=discord.File(payload, filename="{:.0f}-{}-{}.png".format(time.time() * 1000, messageRequest.authorId, random.randint(1000, 9999))))
 					sentMessages.append(chartMessage)
 					try: await chartMessage.add_reaction("☑")
 					except: pass
@@ -1694,7 +1651,7 @@ class Alpha(discord.AutoShardedClient):
 				for timeframe in request.get_timeframes():
 					async with message.channel.typing():
 						request.set_current(timeframe=timeframe)
-						payload, chartText = await Processor.execute_data_server_request(messageRequest.authorId, "chart", request)
+						payload, chartText = await Processor.execute_data_server_request("chart", request)
 
 					if payload is None:
 						errorMessage = "Requested orderflow data for `{}` is not available.".format(request.get_ticker().name) if chartText is None else chartText
@@ -1705,7 +1662,7 @@ class Alpha(discord.AutoShardedClient):
 						try: await chartMessage.add_reaction("☑")
 						except: pass
 					else:
-						chartMessage = await message.channel.send(content=chartText, file=discord.File(payload, "{:.0f}-{}-{}.png".format(time.time() * 1000, messageRequest.authorId, random.randint(1000, 9999))))
+						chartMessage = await message.channel.send(content=chartText, file=discord.File(payload, filename="{:.0f}-{}-{}.png".format(time.time() * 1000, messageRequest.authorId, random.randint(1000, 9999))))
 						sentMessages.append(chartMessage)
 						try: await chartMessage.add_reaction("☑")
 						except: pass
@@ -1751,7 +1708,7 @@ class Alpha(discord.AutoShardedClient):
 			for timeframe in request.get_timeframes():
 				async with message.channel.typing():
 					request.set_current(timeframe=timeframe)
-					payload, chartText = await Processor.execute_data_server_request(messageRequest.authorId, "heatmap", request)
+					payload, chartText = await Processor.execute_data_server_request("heatmap", request)
 
 				if payload is None:
 					errorMessage = "Requested heat map is not available." if chartText is None else chartText
@@ -1762,7 +1719,7 @@ class Alpha(discord.AutoShardedClient):
 					try: await chartMessage.add_reaction("☑")
 					except: pass
 				else:
-					chartMessage = await message.channel.send(content=chartText, file=discord.File(payload, "{:.0f}-{}-{}.png".format(time.time() * 1000, messageRequest.authorId, random.randint(1000, 9999))))
+					chartMessage = await message.channel.send(content=chartText, file=discord.File(payload, filename="{:.0f}-{}-{}.png".format(time.time() * 1000, messageRequest.authorId, random.randint(1000, 9999))))
 					sentMessages.append(chartMessage)
 					try: await chartMessage.add_reaction("☑")
 					except: pass
@@ -1791,7 +1748,7 @@ class Alpha(discord.AutoShardedClient):
 				return (sentMessages, len(sentMessages))
 
 			async with message.channel.typing():
-				payload, chartText = await Processor.execute_data_server_request(messageRequest.authorId, "depth", request)
+				payload, chartText = await Processor.execute_data_server_request("depth", request)
 
 			if payload is None:
 				embed = discord.Embed(title="Requested orderbook visualization for `{}` is not available.".format(request.get_ticker().name), color=constants.colors["gray"])
@@ -1801,7 +1758,7 @@ class Alpha(discord.AutoShardedClient):
 				try: await chartMessage.add_reaction("☑")
 				except: pass
 			else:
-				chartMessage = await message.channel.send(content=chartText, file=discord.File(payload, "{:.0f}-{}-{}.png".format(time.time() * 1000, messageRequest.authorId, random.randint(1000, 9999))))
+				chartMessage = await message.channel.send(content=chartText, file=discord.File(payload, filename="{:.0f}-{}-{}.png".format(time.time() * 1000, messageRequest.authorId, random.randint(1000, 9999))))
 				sentMessages.append(chartMessage)
 				try: await chartMessage.add_reaction("☑")
 				except: pass
@@ -1841,13 +1798,15 @@ class Alpha(discord.AutoShardedClient):
 
 					ticker = request.get_ticker()
 					exchange = request.get_exchange()
+					marketAlerts = messageRequest.accountProperties.get("marketAlerts", [])
 
-					if len(messageRequest.accountProperties.get("marketAlerts", {}).keys()) >= 50:
+					if len(marketAlerts) >= 50:
 						embed = discord.Embed(title="You can only create up to 50 price alerts.", color=constants.colors["gray"])
 						embed.set_author(name="Maximum number of price alerts reached", icon_url=static_storage.icon_bw)
 						sentMessages.append(await message.channel.send(embed=embed))
 						return (sentMessages, len(sentMessages))
 
+					alertId = str(uuid.uuid4())
 					newAlert = {
 						"timestamp": time.time(),
 						"channel": str(message.channel.id),
@@ -1865,7 +1824,8 @@ class Alpha(discord.AutoShardedClient):
 					else:
 						levelText = "{:,.0f}".format(newAlert["level"])
 
-					for key, alert in messageRequest.accountProperties.get("marketAlerts", {}).items():
+					for key in marketAlerts:
+						alert = database.document("details/marketAlerts/{}/{}".format(messageRequest.authorId, key)).get().to_dict()
 						alertRequest = pickle.loads(zlib.decompress(alert["request"]))
 						alertExchange = alertRequest.get_exchange()
 						if alertRequest.get_ticker() == ticker and alertRequest.currentPlatform == request.currentPlatform and ((alertExchange is None and exchange is None) or alertExchange.id == exchange.id) and alert["level"] == newAlert["level"]:
@@ -1874,7 +1834,7 @@ class Alpha(discord.AutoShardedClient):
 							sentMessages.append(await message.channel.send(embed=embed))
 							return (sentMessages, len(sentMessages))
 
-					payload, quoteText = await Processor.execute_data_server_request(messageRequest.authorId, "quote", request)
+					payload, quoteText = await Processor.execute_data_server_request("quote", request)
 					
 					if payload is None or payload["quotePrice"] is None:
 						errorMessage = "Requested price alert for `{}` is not available.".format(request.get_ticker().name) if quoteText is None else quoteText
@@ -1893,12 +1853,16 @@ class Alpha(discord.AutoShardedClient):
 							sentMessages.append(await message.channel.send(embed=embed))
 							return (sentMessages, len(sentMessages))
 
+						marketAlerts.append(alertId)
 						if not messageRequest.is_registered():
-							database.document("discord/properties/users/{}".format(messageRequest.authorId)).set({"marketAlerts": {str(uuid.uuid4()): newAlert}}, merge=True)
+							database.document("details/marketAlerts/{}/{}".format(messageRequest.authorId, alertId)).delete()
+							database.document("discord/properties/users/{}".format(messageRequest.authorId)).set({"marketAlerts": marketAlerts}, merge=True)
 						elif messageRequest.serverwide_command_presets_available():
-							database.document("accounts/{}".format(self.account_id_for(messageRequest.authorId))).set({"marketAlerts": {str(uuid.uuid4()): newAlert}}, merge=True)
+							database.document("details/marketAlerts/{}/{}".format(self.account_id_for(messageRequest.authorId), alertId)).delete()
+							database.document("accounts/{}".format(self.account_id_for(messageRequest.authorId))).set({"marketAlerts": marketAlerts}, merge=True)
 						elif messageRequest.personal_command_presets_available():
-							database.document("accounts/{}".format(self.account_id_for(messageRequest.authorId))).set({"marketAlerts": {str(uuid.uuid4()): newAlert}, "customer": {"addons": {"marketAlerts": 1}}}, merge=True)
+							database.document("details/marketAlerts/{}/{}".format(self.account_id_for(messageRequest.authorId), alertId)).delete()
+							database.document("accounts/{}".format(self.account_id_for(messageRequest.authorId))).set({"marketAlerts": marketAlerts, "customer": {"addons": {"marketAlerts": 1}}}, merge=True)
 
 						embed = discord.Embed(title="Price alert set for {} ({}) at {} {}.".format(ticker.base, request.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote), color=constants.colors["deep purple"])
 						embed.set_author(name="Alert successfully set", icon_url=static_storage.icon)
@@ -1921,11 +1885,12 @@ class Alpha(discord.AutoShardedClient):
 
 			elif method in ["list", "all"]:
 				if len(arguments) == 1:
-					totalAlertCount = len(messageRequest.accountProperties.get("marketAlerts", {}).keys())
-					index = 0
+					totalAlertCount = len(messageRequest.accountProperties.get("marketAlerts", []))
 
-					for key, alert in messageRequest.accountProperties.get("marketAlerts", {}).items():
-						index += 1
+					for index, key in enumerate(messageRequest.accountProperties.get("marketAlerts", [])):
+						await message.channel.trigger_typing()
+
+						alert = database.document("details/marketAlerts/{}/{}".format(self.account_id_for(messageRequest.authorId), key)).get().to_dict()
 						
 						alertRequest = pickle.loads(zlib.decompress(alert["request"]))
 						ticker = alertRequest.get_ticker()
@@ -1941,7 +1906,7 @@ class Alpha(discord.AutoShardedClient):
 							levelText = "{:,.0f}".format(alert["level"])
 
 						embed = discord.Embed(title="Price alert set for {} ({}) at {} {}".format(ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote), color=constants.colors["deep purple"])
-						embed.set_footer(text="Alert {}/{} ● id: {}".format(index, totalAlertCount, key))
+						embed.set_footer(text="Alert {}/{} ● id: {}".format(index + 1, totalAlertCount, key))
 						alertMessage = await message.channel.send(embed=embed)
 						sentMessages.append(alertMessage)
 						try: await alertMessage.add_reaction('❌')
@@ -1978,7 +1943,7 @@ class Alpha(discord.AutoShardedClient):
 				return (sentMessages, len(sentMessages))
 
 			async with message.channel.typing():
-				payload, quoteText = await Processor.execute_data_server_request(messageRequest.authorId, "quote", request)
+				payload, quoteText = await Processor.execute_data_server_request("quote", request)
 
 			if payload is None or payload["quotePrice"] is None:
 				errorMessage = "Requested price for `{}` is not available.".format(request.get_ticker().name) if quoteText is None else quoteText
@@ -2030,7 +1995,7 @@ class Alpha(discord.AutoShardedClient):
 				return (sentMessages, len(sentMessages))
 
 			async with message.channel.typing():
-				payload, quoteText = await Processor.execute_data_server_request(messageRequest.authorId, "quote", request)
+				payload, quoteText = await Processor.execute_data_server_request("quote", request)
 
 			if payload is None or payload["quoteVolume"] is None:
 				errorMessage = "Requested volume for `{}` is not available.".format(request.get_ticker().name) if quoteText is None else quoteText
@@ -2102,7 +2067,7 @@ class Alpha(discord.AutoShardedClient):
 		try:
 			arguments = requestSlice.split(" ")
 
-			outputMessage, request = Processor.process_quote_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platformQueue=["CoinGecko"])
+			outputMessage, request = Processor.process_detail_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platformQueue=["CoinGecko"])
 			if outputMessage is not None:
 				if not messageRequest.is_muted() and outputMessage != "":
 					embed = discord.Embed(title=outputMessage, description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/guide/alpha-bot/cryptocurrency-details).", color=constants.colors["gray"])
@@ -2110,25 +2075,23 @@ class Alpha(discord.AutoShardedClient):
 					sentMessages.append(await message.channel.send(embed=embed))
 				return (sentMessages, len(sentMessages))
 
-			ticker = request.get_ticker()
-			if ticker.base in TickerParser.coinGeckoIndex:
-				await message.channel.trigger_typing()
+			async with message.channel.typing():
+				payload, detailText = await Processor.execute_data_server_request("detail", request)
 
-				try:
-					data = TickerParser.coinGecko.get_coin_by_id(id=TickerParser.coinGeckoIndex[ticker.base]["id"], localization="false", tickers=False, market_data=True, community_data=True, developer_data=True)
-				except Exception as e:
-					await self.unknown_error(message, messageRequest.authorId, e)
-					return
+			if payload is None:
+				errorMessage = "Requested details for `{}` are not available.".format(request.get_ticker().name) if detailText is None else detailText
+				embed = discord.Embed(title=errorMessage, color=constants.colors["gray"])
+				embed.set_author(name="Data not available", icon_url=static_storage.icon_bw)
+				quoteMessage = await message.channel.send(embed=embed)
+				sentMessages.append(quoteMessage)
+				try: await quoteMessage.add_reaction("☑")
+				except: pass
+			else:
+				request.set_current(platform=payload["platform"])
+				ticker = request.get_ticker()
 
-				embed = discord.Embed(title="{} ({})".format(data["name"], ticker.base), description="Ranked #{} by market cap".format(data["market_data"]["market_cap_rank"]), color=constants.colors["lime"])
-				embed.set_thumbnail(url=data["image"]["large"])
-
-				if ticker.quote is None: ticker.quote = "USD"
-				if ticker.quote.lower() not in data["market_data"]["current_price"]:
-					embed = discord.Embed(title="Conversion to {} is not available.".format(ticker.name), color=constants.colors["gray"])
-					embed.set_author(name="Conversion not available", icon_url=static_storage.icon_bw)
-					sentMessages.append(await message.channel.send(embed=embed))
-					return
+				embed = discord.Embed(title=payload["name"], description="Ranked #{} by market cap".format(payload["rank"]), color=constants.colors["lime"])
+				embed.set_thumbnail(url=payload["image"])
 
 				marketCap = "Market cap: no data"
 				totalVolume = ""
@@ -2138,60 +2101,46 @@ class Alpha(discord.AutoShardedClient):
 				communityScore = ""
 				liquidityScore = ""
 				publicInterestScore = ""
-				if data["market_data"]["market_cap"] is not None:
-					marketCap = "Market cap: {:,.0f} {}".format(data["market_data"]["market_cap"]["usd"], "USD")
-				if data["market_data"]["total_volume"] is not None:
-					totalVolume = "\nTotal volume: {:,.0f} {}".format(data["market_data"]["total_volume"]["usd"], "USD")
-				if data["market_data"]["total_supply"] is not None:
-					totalSupply = "\nTotal supply: {:,.0f} {}".format(data["market_data"]["total_supply"], ticker.base)
-				if data["market_data"]["circulating_supply"] is not None:
-					circulatingSupply = "\nCirculating supply: {:,.0f} {}".format(data["market_data"]["circulating_supply"], ticker.base)
-				if data["developer_score"] != 0:
-					developerScore = "\nDeveloper score: {:,.1f}/100".format(data["developer_score"])
-				if data["community_score"] != 0:
-					communityScore = "\nCommunity score: {:,.1f}/100".format(data["community_score"])
-				if data["liquidity_score"] != 0:
-					liquidityScore = "\nLiquidity score: {:,.1f}/100".format(data["liquidity_score"])
-				if data["public_interest_score"] != 0:
-					publicInterestScore = "\nPublic interest: {:,.1f}".format(data["public_interest_score"])
+				if payload["marketcap"] is not None:
+					marketCap = "Market cap: {:,.0f} {}".format(payload["marketcap"], "USD")
+				if payload["volume"] is not None:
+					totalVolume = "\nTotal volume: {:,.0f} {}".format(payload["volume"], "USD")
+				if payload["supply"]["total"] is not None:
+					totalSupply = "\nTotal supply: {:,.0f} {}".format(payload["supply"]["total"], ticker.base)
+				if payload["supply"]["circulating"] is not None:
+					circulatingSupply = "\nCirculating supply: {:,.0f} {}".format(payload["supply"]["circulating"], ticker.base)
+				if payload["score"]["developer"] is not None:
+					developerScore = "\nDeveloper score: {:,.1f}/100".format(payload["score"]["developer"])
+				if payload["score"]["community"] is not None:
+					communityScore = "\nCommunity score: {:,.1f}/100".format(payload["score"]["community"])
+				if payload["score"]["liquidity"] is not None:
+					liquidityScore = "\nLiquidity score: {:,.1f}/100".format(payload["score"]["liquidity"])
+				if payload["score"]["public interest"] is not None:
+					publicInterestScore = "\nPublic interest: {:,.1f}".format(payload["score"]["public interest"])
+
 				embed.add_field(name="Details", value=(marketCap + totalVolume + totalSupply + circulatingSupply + developerScore + communityScore + liquidityScore + publicInterestScore), inline=False)
 
-				formattedUsdPrice = ("${:,.%df}" % Utils.add_decimal_zeros(data["market_data"]["current_price"]["usd"])).format(data["market_data"]["current_price"]["usd"])
+				formattedUsdPrice = ("${:,.%df}" % Utils.add_decimal_zeros(payload["price"]["current"])).format(payload["price"]["current"])
 				formattedUsdAth = ""
 				formattedUsdAtl = ""
-				if "usd" in data["market_data"]["ath"]:
-					formattedUsdAth = ("\nATH: ${:,.%df}" % Utils.add_decimal_zeros(data["market_data"]["ath"]["usd"])).format(data["market_data"]["ath"]["usd"])
-				if "usd" in data["market_data"]["atl"]:
-					formattedUsdAtl = ("\nATL: ${:,.%df}" % Utils.add_decimal_zeros(data["market_data"]["atl"]["usd"])).format(data["market_data"]["atl"]["usd"])
-				embed.add_field(name="Price in USD", value="__{}__{}{}".format(formattedUsdPrice, formattedUsdAth, formattedUsdAtl), inline=True)
-				if ticker.base != "BTC" and "btc" in data["market_data"]["current_price"]:
-					formattedBtcPrice = ("₿{:,.%df}" % Utils.add_decimal_zeros(data["market_data"]["current_price"]["btc"])).format(data["market_data"]["current_price"]["btc"])
-					formattedBtcAth = ("₿{:,.%df}" % Utils.add_decimal_zeros(data["market_data"]["ath"]["btc"])).format(data["market_data"]["ath"]["btc"])
-					formattedBtcAtl = ("₿{:,.%df}" % Utils.add_decimal_zeros(data["market_data"]["atl"]["btc"])).format(data["market_data"]["atl"]["btc"])
-					embed.add_field(name="Price in BTC", value="__{}__\nATH: {}\nATL: {}".format(formattedBtcPrice, formattedBtcAth, formattedBtcAtl), inline=True)
-				if ticker.quote.lower() in data["market_data"]["current_price"] and ticker.quote not in ["USD", "BTC"]:
-					formattedQuotePrice = ("{:,.%df} {}" % Utils.add_decimal_zeros(data["market_data"]["current_price"][ticker.quote.lower()])).format(data["market_data"]["current_price"][ticker.quote.lower()], ticker.quote)
-					formattedQuoteAth = ("{:,.%df} {}" % Utils.add_decimal_zeros(data["market_data"]["ath"][ticker.quote.lower()])).format(data["market_data"]["ath"][ticker.quote.lower()], ticker.quote)
-					formattedQuoteAtl = ("{:,.%df} {}" % Utils.add_decimal_zeros(data["market_data"]["atl"][ticker.quote.lower()])).format(data["market_data"]["atl"][ticker.quote.lower()], ticker.quote)
-					embed.add_field(name="Price in {}".format(ticker.quote), value="__{}__\nATH: {}\nATL: {}".format(formattedQuotePrice, formattedQuoteAth, formattedQuoteAtl), inline=True)
+				if payload["price"]["ath"] is not None:
+					formattedUsdAth = ("\nATH: ${:,.%df}" % Utils.add_decimal_zeros(payload["price"]["ath"])).format(payload["price"]["ath"])
+				if payload["price"]["atl"]:
+					formattedUsdAtl = ("\nATL: ${:,.%df}" % Utils.add_decimal_zeros(payload["price"]["atl"])).format(payload["price"]["atl"])
+				embed.add_field(name="Price", value="__{}__{}{}".format(formattedUsdPrice, formattedUsdAth, formattedUsdAtl), inline=True)
 
 				change24h = "Past day: no data"
 				change30d = ""
 				change1y = ""
-				if "usd" in data["market_data"]["price_change_percentage_24h_in_currency"]:
-					change24h = "\nPast day: *{:+,.2f} %*".format(data["market_data"]["price_change_percentage_24h_in_currency"]["usd"])
-				if "usd" in data["market_data"]["price_change_percentage_30d_in_currency"]:
-					change30d = "\nPast month: *{:+,.2f} %*".format(data["market_data"]["price_change_percentage_30d_in_currency"]["usd"])
-				if "usd" in data["market_data"]["price_change_percentage_1y_in_currency"]:
-					change1y = "\nPast year: *{:+,.2f} %*".format(data["market_data"]["price_change_percentage_1y_in_currency"]["usd"])
-				embed.add_field(name="Price change in USD", value=(change24h + change30d + change1y), inline=True)
+				if payload["change"]["past day"]:
+					change24h = "\nPast day: *{:+,.2f} %*".format(payload["change"]["past day"])
+				if payload["change"]["past month"]:
+					change30d = "\nPast month: *{:+,.2f} %*".format(payload["change"]["past month"])
+				if payload["change"]["past year"]:
+					change1y = "\nPast year: *{:+,.2f} %*".format(payload["change"]["past year"])
+				embed.add_field(name="Price change", value=(change24h + change30d + change1y), inline=True)
+				embed.set_footer(text="Data {}".format(payload["sourceText"]))
 
-				embed.set_footer(text="Data from CoinGecko")
-
-				sentMessages.append(await message.channel.send(embed=embed))
-			elif not messageRequest.is_muted():
-				embed = discord.Embed(title="Requested market information for `{}` is not available.".format(ticker.id), color=constants.colors["gray"])
-				embed.set_author(name="Ticker not found", icon_url=static_storage.icon_bw)
 				sentMessages.append(await message.channel.send(embed=embed))
 
 			autodeleteOverride = request.find_parameter_in_list("autoDeleteOverride", request.get_filters(), default=False)
@@ -2219,7 +2168,7 @@ class Alpha(discord.AutoShardedClient):
 
 					embed = discord.Embed(title="Top Alpha Bot requests", color=constants.colors["deep purple"])
 					for token in response:
-						embed.add_field(name="{} ({})".format(TickerParser.coinGeckoIndex[token["id"]]["name"], token["id"]), value="Rank {:,.1f}/100".format(token["rank"]), inline=True)
+						embed.add_field(name=token["id"], value="Rank {:,.1f}/100".format(token["rank"]), inline=True)
 					sentMessages.append(await message.channel.send(embed=embed))
 
 				elif messageRequest.is_pro():
@@ -2240,7 +2189,7 @@ class Alpha(discord.AutoShardedClient):
 			elif method in ["gainers", "gain", "gains"]:
 				response = []
 				async with message.channel.typing():
-					rawData = TickerParser.coinGecko.get_coins_markets(vs_currency="usd", order="market_cap_desc", per_page=250, price_change_percentage="24h")
+					rawData = self.coinGecko.get_coins_markets(vs_currency="usd", order="market_cap_desc", per_page=250, price_change_percentage="24h")
 					for e in rawData:
 						if e.get("price_change_percentage_24h_in_currency", None) is not None:
 							response.append({"symbol": e["symbol"].upper(), "change": e["price_change_percentage_24h_in_currency"]})
@@ -2248,13 +2197,13 @@ class Alpha(discord.AutoShardedClient):
 				
 				embed = discord.Embed(title="Top gainers", color=constants.colors["deep purple"])
 				for token in response:
-					embed.add_field(name="{} ({})".format(TickerParser.coinGeckoIndex[token["symbol"]]["name"], token["symbol"]), value="Gained {:,.1f} %".format(token["change"]), inline=True)
+					embed.add_field(name=token["symbol"], value="Gained {:,.1f} %".format(token["change"]), inline=True)
 				sentMessages.append(await message.channel.send(embed=embed))
 
 			elif method in ["losers", "loosers", "loss", "losses"]:
 				response = []
 				async with message.channel.typing():
-					rawData = TickerParser.coinGecko.get_coins_markets(vs_currency="usd", order="market_cap_desc", per_page=250, price_change_percentage="24h")
+					rawData = self.coinGecko.get_coins_markets(vs_currency="usd", order="market_cap_desc", per_page=250, price_change_percentage="24h")
 					for e in rawData:
 						if e.get("price_change_percentage_24h_in_currency", None) is not None:
 							response.append({"symbol": e["symbol"].upper(), "change": e["price_change_percentage_24h_in_currency"]})
@@ -2262,7 +2211,7 @@ class Alpha(discord.AutoShardedClient):
 				
 				embed = discord.Embed(title="Top losers", color=constants.colors["deep purple"])
 				for token in response:
-					embed.add_field(name="{} ({})".format(TickerParser.coinGeckoIndex[token["symbol"]]["name"], token["symbol"]), value="Lost {:,.1f} %".format(token["change"]), inline=True)
+					embed.add_field(name=token["symbol"], value="Lost {:,.1f} %".format(token["change"]), inline=True)
 				sentMessages.append(await message.channel.send(embed=embed))
 
 		except asyncio.CancelledError: pass
@@ -2289,11 +2238,8 @@ class Alpha(discord.AutoShardedClient):
 
 			listings, total = TickerParser.get_listings(request.get_ticker())
 			if total != 0:
-				thumbnailUrl = TickerParser.coinGeckoIndex[request.get_ticker().base]["image"] if request.get_ticker().base in TickerParser.coinGeckoIndex else static_storage.icon
-				assetName = TickerParser.coinGeckoIndex[request.get_ticker().base]["name"] if request.get_ticker().base in TickerParser.coinGeckoIndex else request.get_ticker().base
-
 				embed = discord.Embed(color=constants.colors["deep purple"])
-				embed.set_author(name="{} listings".format(assetName), icon_url=thumbnailUrl)
+				embed.set_author(name="{} listings".format(request.get_ticker().base))
 				for quote, exchanges in listings:
 					embed.add_field(name="{} pair found on {} exchanges".format(quote, len(exchanges)), value="{}".format(", ".join(exchanges)), inline=False)
 				sentMessages.append(await message.channel.send(embed=embed))
@@ -2380,7 +2326,7 @@ class Alpha(discord.AutoShardedClient):
 				ticker = request.get_ticker()
 
 				async with message.channel.typing():
-					payload, tradeText = await Processor.execute_data_server_request(messageRequest.authorId, "trade", request)
+					payload, tradeText = await Processor.execute_data_server_request("trade", request)
 
 				if payload is None or payload["quotePrice"] is None:
 					errorMessage = "Requested live {} order for {} could not be executed.".format(orderType.replace("-", " "), ticker.name) if tradeText is None else tradeText
@@ -2499,41 +2445,48 @@ class Alpha(discord.AutoShardedClient):
 
 							amount = paper[exchange.id]["balance"][base]["amount"]
 
+							balanceText = ""
 							valueText = "No conversion"
 							if exchange.id in ["bitmex"]:
 								if base == "BTC":
 									btcValue = -1
-									valueText = "{:,.4f} XBT\n≈ {:,.6f} USD".format(amount, amount * 1)
-									totalValue += amount * 1
+									payload, quoteText = await Processor.process_conversion(messageRequest, base, exchangeBaseCurrency, amount)
+									convertedValue = payload["raw"]["quotePrice"][0] if quoteText is None else 0
+									balanceText = "{:,.4f} XBT".format(amount)
+									valueText = "≈ {:,.6f} USD".format(convertedValue)
+									totalValue += convertedValue
 								else:
 									btcValue = -1
 									coinName = "{} position".format(ticker.name)
 									valueText = "{:,.0f} contracts\n≈ {:,.4f} XBT".format(amount, amount / 1)
-									totalValue += amount * 1
+									totalValue += convertedValue
 							else:
 								if isFiat:
 									payload, quoteText = await Processor.process_conversion(messageRequest, base, "BTC", amount)
 									btcValue = payload["raw"]["quotePrice"][0] if quoteText is None else 0
-									valueText = "{:,.6f} {}\nStable in fiat value".format(amount, base)
+									balanceText = "{:,.6f} {}".format(amount, base)
+									valueText = "Stable in fiat value"
 									totalValue += amount
 								elif base == "BTC":
 									btcValue = amount
+									balanceText = "{:,.8f} BTC".format(amount)
 									payload, quoteText = await Processor.process_conversion(messageRequest, base, exchangeBaseCurrency, amount)
 									convertedValue = payload["raw"]["quotePrice"][0] if quoteText is None else 0
 									if convertedValue is not None:
-										valueText = "{:,.8f} {}\n≈ {:,.6f} {}".format(amount, base, convertedValue, exchangeBaseCurrency)
+										valueText = "≈ {:,.6f} {}".format(amount, base, convertedValue, exchangeBaseCurrency)
 										totalValue += convertedValue
 								else:
+									balanceText = "{:,.8f} {}".format(amount, base)
 									payload, quoteText = await Processor.process_conversion(messageRequest, base, "BTC", amount)
 									btcValue = payload["raw"]["quotePrice"][0] if quoteText is None else 0
 									payload, quoteText = await Processor.process_conversion(messageRequest, base, exchangeBaseCurrency, amount)
 									convertedValue = payload["raw"]["quotePrice"][0] if quoteText is None else 0
 									if convertedValue is not None:
-										valueText = "{:,.8f} {}\n{:,.8f} {}".format(amount, base, convertedValue, exchangeBaseCurrency)
+										valueText = "≈ {:,.8f} {}".format(convertedValue, exchangeBaseCurrency)
 										totalValue += convertedValue
 
 							if btcValue is not None and btcValue > 0.001:
-								embed.add_field(name="{}:".format(TickerParser.coinGeckoIndex[base]["name"]), value=valueText, inline=True)
+								embed.add_field(name="{}: {}".format(base, balanceText), value=valueText, inline=True)
 								holdingAssets.add(base)
 
 						openOrdersBtcValue = 0
@@ -2677,7 +2630,7 @@ class Alpha(discord.AutoShardedClient):
 				ticker = request.get_ticker()
 
 				async with message.channel.typing():
-					payload, tradeText = await Processor.execute_data_server_request(messageRequest.authorId, "trade", request)
+					payload, tradeText = await Processor.execute_data_server_request("trade", request)
 
 				if payload is None or payload["quotePrice"] is None:
 					errorMessage = "Requested paper {} order for `{}` could not be executed.".format(orderType.replace("-", " "), ticker.name) if tradeText is None else tradeText
@@ -2819,7 +2772,7 @@ class Alpha(discord.AutoShardedClient):
 # -------------------------
 
 def handle_exit():
-	print("\n[Shutdown]: timestamp: {}, description: closing tasks".format(Utils.get_current_date()))
+	print("\n[Shutdown]: closing tasks")
 	client.loop.run_until_complete(client.topgg.close())
 	client.loop.run_until_complete(client.logout())
 	for t in asyncio.all_tasks(loop=client.loop):

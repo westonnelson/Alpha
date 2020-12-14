@@ -1,11 +1,11 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: satellite-production
+  name: satellite
   labels:
     app: satellite
 spec:
-  replicas: 41
+  replicas: 48
   selector:
     matchLabels:
       app: satellite
@@ -33,8 +33,8 @@ spec:
             readOnly: true
         resources:
           requests:
-            memory: "125Mi"
-            cpu: "5m"
+            memory: "75Mi"
+            cpu: "10m"
         ports:
           - containerPort: 6911
       volumes:

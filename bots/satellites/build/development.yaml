@@ -1,43 +1,47 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: discord-manager-production
+  name: satellite-development
   labels:
-    app: discord-manager
+    app: satellite
 spec:
-  replicas: 1
+  replicas: 48
   selector:
     matchLabels:
-      app: discord-manager
+      app: satellite
   template:
     metadata:
       labels:
-        app: discord-manager
+        app: satellite
     spec:
       containers:
-      - name: discord-manager
-        image: gcr.io/nlc-bot-36685/alpha-discord-manager
-        imagePullPolicy: Always
-        env:
-          - name: PRODUCTION_MODE
-            value: "1"
+      - name: satellite
+        image: alphabotsystem/alpha-satellites
+        imagePullPolicy: IfNotPresent
         volumeMounts:
           - name: alpha-service-keys
             mountPath: /run/secrets/alpha-service
             readOnly: true
+          - name: alpha-satellite-keys
+            mountPath: /run/secrets/alpha-satellites
+            readOnly: true
           - name: google-cloud-auth
             mountPath: /run/secrets/google-cloud-auth
             readOnly: true
-        resources:
-          requests:
-            memory: "110Mi"
-            cpu: "20m"
+        ports:
+          - containerPort: 6911
       volumes:
         - name: alpha-service-keys
           secret:
             secretName: alpha-service-keys
             items:
               - key: credentials
+                path: key
+        - name: alpha-satellite-keys
+          secret:
+            secretName: alpha-satellite-keys
+            items:
+              - key: satellites
                 path: key
         - name: google-cloud-auth
           secret:

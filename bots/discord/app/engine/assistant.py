@@ -27,7 +27,7 @@ class Assistant(object):
 				if "Here are some things you can ask for:" in response:
 					return True, "help"
 				elif any(trigger in response for trigger in constants.badPunTrigger):
-					with open("assets/jokes.json") as json_data:
+					with open("app/assets/jokes.json") as json_data:
 						return False, "Here's a pun that might make you laugh :smile:\n{}".format(random.choice(json.load(json_data)))
 				else:
 					for override in constants.messageOverrides:

@@ -1,13 +1,13 @@
 version: '3.1'
 services:
-  data-server:
-    image: alphabotsystem/alpha-data-server
+  parser:
+    image: alphabotsystem/alpha-parser
     build:
       context: ./
-      dockerfile: ./build/server/dockerfile
+      dockerfile: ./services/parser/build/dockerfile
     volumes:
-     - ./server:/usr/src/data-server
-     - ./libraries:/usr/src/data-server/libraries
+     - ./services/parser:/usr/src/parser
+     - ./libraries:/usr/src/parser/libraries
     ports:
      - "6900:6900"
     secrets:
@@ -16,13 +16,120 @@ services:
      - source: google-cloud-auth
        target: google-cloud-auth/key
 
+  image-server:
+    image: alphabotsystem/alpha-image-server
+    build:
+      context: ./
+      dockerfile: ./services/images/build/dockerfile
+    volumes:
+     - ./services/images:/usr/src/image-server
+     - ./libraries:/usr/src/image-server/libraries
+    ports:
+     - "6901:6900"
+    secrets:
+     - source: alpha-service-keys
+       target: alpha-service/key
+     - source: google-cloud-auth
+       target: google-cloud-auth/key
+    depends_on:
+     - parser
+
+  quote-server:
+    image: alphabotsystem/alpha-quote-server
+    build:
+      context: ./
+      dockerfile: ./services/quotes/build/dockerfile
+    volumes:
+     - ./services/quotes:/usr/src/quote-server
+     - ./libraries:/usr/src/quote-server/libraries
+    ports:
+     - "6902:6900"
+    secrets:
+     - source: alpha-service-keys
+       target: alpha-service/key
+     - source: google-cloud-auth
+       target: google-cloud-auth/key
+    depends_on:
+     - parser
+
+  detail-server:
+    image: alphabotsystem/alpha-detail-server
+    build:
+      context: ./
+      dockerfile: ./services/details/build/dockerfile
+    volumes:
+     - ./services/details:/usr/src/detail-server
+     - ./libraries:/usr/src/detail-server/libraries
+    ports:
+     - "6903:6900"
+    secrets:
+     - source: alpha-service-keys
+       target: alpha-service/key
+     - source: google-cloud-auth
+       target: google-cloud-auth/key
+    depends_on:
+     - parser
+
+  candle-server:
+    image: alphabotsystem/alpha-candle-server
+    build:
+      context: ./
+      dockerfile: ./services/candles/build/dockerfile
+    volumes:
+     - ./services/candles:/usr/src/candle-server
+     - ./libraries:/usr/src/candle-server/libraries
+    ports:
+     - "6904:6900"
+    secrets:
+     - source: alpha-service-keys
+       target: alpha-service/key
+     - source: google-cloud-auth
+       target: google-cloud-auth/key
+    depends_on:
+     - parser
+
+  trade-server:
+    image: alphabotsystem/alpha-trade-server
+    build:
+      context: ./
+      dockerfile: ./services/trades/build/dockerfile
+    volumes:
+     - ./services/trades:/usr/src/trade-server
+     - ./libraries:/usr/src/trade-server/libraries
+    ports:
+     - "6905:6900"
+    secrets:
+     - source: alpha-service-keys
+       target: alpha-service/key
+     - source: google-cloud-auth
+       target: google-cloud-auth/key
+    depends_on:
+     - parser
+
+  cron-jobs:
+    image: alphabotsystem/alpha-cron-jobs
+    build:
+      context: ./
+      dockerfile: ./services/jobs/build/dockerfile
+    volumes:
+      - ./services/jobs:/usr/src/cron-jobs
+      - ./libraries:/usr/src/cron-jobs/libraries
+    secrets:
+      - source: alpha-service-keys
+        target: alpha-service/key
+      - source: google-cloud-auth
+        target: google-cloud-auth/key
+    depends_on:
+     - parser
+     - candle-server
+
   discord-bot:
     image: alphabotsystem/alpha-discord-bot
     build:
       context: ./
-      dockerfile: ./build/discord/dockerfile
+      dockerfile: ./bots/discord/build/dockerfile
     volumes:
-     - ./discord:/usr/src/discord-bot
+     - ./bots/discord:/usr/src/discord-bot
      - ./libraries:/usr/src/discord-bot/libraries
     ports:
      - "6910:6900"
@@ -32,15 +139,19 @@ services:
      - source: google-cloud-auth
        target: google-cloud-auth/key
     depends_on:
-     - data-server
+     - parser
+     - image-server
+     - quote-server
+     - candle-server
+     - trade-server
 
   satellites:
     image: alphabotsystem/alpha-satellites
     build:
       context: ./
-      dockerfile: ./build/satellites/dockerfile
+      dockerfile: ./bots/satellites/build/dockerfile
     volumes:
-      - ./satellites:/usr/src/satellites
+      - ./bots/satellites:/usr/src/satellites
       - ./libraries:/usr/src/satellites/libraries
     ports:
       - "6911:6900"
@@ -52,15 +163,16 @@ services:
       - source: google-cloud-auth
         target: google-cloud-auth/key
     depends_on:
-      - data-server
+     - parser
+     - quote-server
 
   twitter-bot:
     image: alphabotsystem/alpha-twitter-bot
     build:
       context: ./
-      dockerfile: ./build/twitter/dockerfile
+      dockerfile: ./bots/twitter/build/dockerfile
     volumes:
-     - ./twitter:/usr/src/twitter-bot
+     - ./bots/twitter:/usr/src/twitter-bot
      - ./libraries:/usr/src/twitter-bot/libraries
     ports:
      - "6912:6900"
@@ -70,15 +182,19 @@ services:
      - source: google-cloud-auth
        target: google-cloud-auth/key
     depends_on:
-     - data-server
+     - parser
+     - image-server
+     - quote-server
+     - candle-server
+     - trade-server
 
   discord-manager:
     image: alphabotsystem/alpha-discord-manager
     build:
       context: ./
-      dockerfile: ./build/manager/dockerfile
+      dockerfile: ./bots/manager/build/dockerfile
     volumes:
-      - ./manager:/usr/src/discord-manager
+      - ./bots/manager:/usr/src/discord-manager
       - ./libraries:/usr/src/discord-manager/libraries
     secrets:
       - source: alpha-service-keys

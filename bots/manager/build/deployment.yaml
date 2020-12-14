@@ -1,22 +1,22 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: twitter-bot-production
+  name: discord-manager
   labels:
-    app: twitter-bot
+    app: discord-manager
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: twitter-bot
+      app: discord-manager
   template:
     metadata:
       labels:
-        app: twitter-bot
+        app: discord-manager
     spec:
       containers:
-      - name: twitter-bot
-        image: gcr.io/nlc-bot-36685/alpha-twitter-bot
+      - name: discord-manager
+        image: gcr.io/nlc-bot-36685/alpha-discord-manager
         imagePullPolicy: Always
         env:
           - name: PRODUCTION_MODE
@@ -30,10 +30,8 @@ spec:
             readOnly: true
         resources:
           requests:
-            memory: "100Mi"
-            cpu: "200m"
-        ports:
-          - containerPort: 6912
+            memory: "110Mi"
+            cpu: "180m"
       volumes:
         - name: alpha-service-keys
           secret:

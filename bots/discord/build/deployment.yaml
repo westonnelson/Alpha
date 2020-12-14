@@ -1,23 +1,26 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: twitter-bot-development
+  name: discord-bot
   labels:
-    app: twitter-bot
+    app: discord-bot
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: twitter-bot
+      app: discord-bot
   template:
     metadata:
       labels:
-        app: twitter-bot
+        app: discord-bot
     spec:
       containers:
-      - name: twitter-bot
-        image: alphabotsystem/alpha-twitter-bot
-        imagePullPolicy: IfNotPresent
+      - name: discord-bot
+        image: gcr.io/nlc-bot-36685/alpha-discord-bot
+        imagePullPolicy: Always
+        env:
+          - name: PRODUCTION_MODE
+            value: "1"
         volumeMounts:
           - name: alpha-service-keys
             mountPath: /run/secrets/alpha-service
@@ -25,8 +28,13 @@ spec:
           - name: google-cloud-auth
             mountPath: /run/secrets/google-cloud-auth
             readOnly: true
+        resources:
+          requests:
+            memory: "500Mi"
+            cpu: "200m"
+            ephemeral-storage: "5000Ki"
         ports:
-        - containerPort: 6912
+          - containerPort: 6910
       volumes:
         - name: alpha-service-keys
           secret:

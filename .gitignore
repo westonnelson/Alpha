@@ -1,6 +1,6 @@
 keys/
 libraries/
-server/
+services/
 
 *.pyc
 *.log
