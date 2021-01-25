@@ -1,0 +1,6 @@
+google-cloud-error-reporting>=0.33.0
+pytz>=2019.2
+ccxt>=1.39.33
+pycoingecko>=0.3.0
+iexfinance>=0.4.3
+pyzmq>=18.1.1

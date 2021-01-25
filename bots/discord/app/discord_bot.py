@@ -8,7 +8,7 @@ import datetime
 import pytz
 import urllib
 import copy
-import atexit
+import json
 import asyncio
 import uuid
 import zlib
@@ -19,6 +19,7 @@ import traceback
 import discord
 import stripe
 import dbl as topgg
+from pycoingecko import CoinGeckoAPI
 from google.cloud import firestore, error_reporting
 
 from assets import static_storage
@@ -78,7 +79,6 @@ class Alpha(discord.AutoShardedClient):
 		self.botStatus = [False, False, False, False, False]
 		t = datetime.datetime.now().astimezone(pytz.utc)
 
-		atexit.register(self.cleanup)
 		Processor.clientId = b"discord_alpha"
 		self.executor = concurrent.futures.ThreadPoolExecutor()
 		self.topgg = topgg.DBLClient(client, os.environ["TOPGG_KEY"])
@@ -107,15 +107,19 @@ class Alpha(discord.AutoShardedClient):
 		print("[Startup]: Alpha Bot is online")
 
 		await self.update_system_status(t)
-		print("[Startup]: system status check complete")
 		if os.environ["PRODUCTION_MODE"]:
-			await self.update_guild_count()
-			await self.update_static_messages()
+			statusChannel = client.get_channel(560884869899485233)
+			onlineMessage = await statusChannel.fetch_message(640502830062632960)
+			if onlineMessage is not None:
+				await onlineMessage.edit(embed=discord.Embed(title=":hourglass_flowing_sand: Alpha Bot: rebooting for updates", color=constants.colors["gray"]), suppress=False)
+		print("[Startup]: system status update complete")
 
 		while not self.is_bot_ready():
 			await asyncio.sleep(1)
 		await client.change_presence(status=discord.Status.online, activity=discord.Activity(type=discord.ActivityType.watching, name="alphabotsystem.com"))
 
+		if os.environ["PRODUCTION_MODE"]:
+			await self.update_static_messages()
 		print("[Startup]: Alpha Bot startup complete")
 
 	def is_bot_ready(self):
@@ -168,20 +172,6 @@ class Alpha(discord.AutoShardedClient):
 			print(traceback.format_exc())
 			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
 
-	def cleanup(self):
-		"""Cleanup before shutdown
-
-		"""
-
-		try:
-			if os.environ["PRODUCTION_MODE"] and self.statistics["c"] > 1000000:
-				statisticsRef = database.document("discord/statistics")
-				t = datetime.datetime.now().astimezone(pytz.utc)
-				statisticsRef.set({"{}-{:02d}".format(t.year, t.month): self.statistics}, merge=True)
-		except Exception:
-			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
-
 
 	# -------------------------
 	# Guild count & management
@@ -200,7 +190,7 @@ class Alpha(discord.AutoShardedClient):
 			database.document("discord/properties/guilds/{}".format(guild.id)).set(MessageRequest.create_guild_settings({"properties": {"name": guild.name, "icon": guild.icon}}))
 			if guild.id in constants.bannedGuilds:
 				await guild.leave()
-			self.topgg.post_guild_count()
+			# await self.topgg.post_guild_count()
 		except Exception:
 			print(traceback.format_exc())
 			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
@@ -215,7 +205,6 @@ class Alpha(discord.AutoShardedClient):
 		"""
 
 		try:
-			await self.update_guild_count()
 			if guild.id in self.guildProperties and self.guildProperties[guild.id]["settings"]["setup"]["connection"] is not None:
 				holdingId = self.guildProperties[guild.id]["settings"]["setup"]["connection"]
 				if holdingId in self.accountProperties:
@@ -224,7 +213,7 @@ class Alpha(discord.AutoShardedClient):
 						communityList.remove(str(guild.id))
 						database.document("accounts/{}".format(holdingId)).set({"customer": {"communitySubscriptions": communityList}}, merge=True)
 			database.document("discord/properties/guilds/{}".format(guild.id)).delete()
-			self.topgg.post_guild_count()
+			# await self.topgg.post_guild_count()
 		except Exception:
 			print(traceback.format_exc())
 			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
@@ -235,14 +224,6 @@ class Alpha(discord.AutoShardedClient):
 		except Exception:
 			print(traceback.format_exc())
 			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
-
-	async def update_guild_count(self):
-		"""Push new guild count to Top.gg
-
-		"""
-
-		try: await self.topgg.post_guild_count()
-		except: pass
 
 
 	# -------------------------
@@ -352,7 +333,7 @@ class Alpha(discord.AutoShardedClient):
 				accountId = change.document.id
 
 				if change.type.name in ["ADDED", "MODIFIED"]:
-					if properties.get("connection") is None: continue
+					if properties.get("connection") is not None: continue
 					self.accountProperties[accountId] = properties
 					self.accountIdMap[accountId] = int(accountId)
 					self.accountIdMap[int(accountId)] = accountId
@@ -407,38 +388,41 @@ class Alpha(discord.AutoShardedClient):
 
 		if len(changes) == 0 or not os.environ["PRODUCTION_MODE"]: return
 		try:
-			while not self.is_bot_ready():
+			while not self.botStatus[0]:
 				print("[Startup]: pending messages snapshot is waiting for setup completion ({})".format(timestamp))
 				time.sleep(5)
 
 			for change in changes:
 				message = change.document.to_dict()
 				if change.type.name == "ADDED":
-					database.document("discord/properties/messages/{}".format(change.document.id)).delete()
-					embed = discord.Embed(title=message["title"], description=message["description"], color=message["color"])
-					if message["subtitle"] is not None: embed.set_author(name=message["subtitle"], icon_url=(message["icon"] if "icon" in message else static_storage.icon))
+					embed = discord.Embed(title=message["title"], description=message.get("description"), color=message["color"])
+					if message["subtitle"] is not None: embed.set_author(name=message["subtitle"], icon_url=message.get("icon", static_storage.icon))
 					if "image" in message: embed.set_image(url=message["image"])
 					if "url" in message: embed.url = message["url"]
 
 					destinationUser = None if message["user"] is None else client.get_user(int(message["user"]))
 					destinationChannel = None if message["channel"] is None else client.get_channel(int(message["channel"]))
-					
-					if destinationUser is not None:
+
+					if message["user"] is not None:
 						try:
 							client.loop.create_task(destinationUser.send(embed=embed))
 						except:
-							mentionText = None if destinationUser is None else "<@!{}>!".format(destinationUser.id)
-							client.loop.create_task(destinationChannel.send(content=mentionText, embed=embed))
-					elif destinationChannel is not None and destinationChannel.id not in [742325964482019359, 739052329361211474, 738109593376260246, 738427004969287781]:
+							try:
+								mentionText = "<@!{}>!".format(message["user"]) if destinationUser is None else None
+								client.loop.create_task(destinationChannel.send(content=mentionText, embed=embed))
+							except: pass
+						database.document("discord/properties/messages/{}".format(change.document.id)).delete()
+					elif message["channel"] is not None:
 						try:
-							client.loop.create_task(destinationChannel.send(embed=embed))
+							if destinationChannel.id in [742325964482019359, 739052329361211474, 738109593376260246, 738427004969287781]:
+								client.loop.create_task(self.post_announcement(destinationChannel, embed))
+							else:
+								client.loop.create_task(destinationChannel.send(embed=embed))
+							database.document("discord/properties/messages/{}".format(change.document.id)).delete()
 						except:
 							pass
-					elif destinationChannel is not None:
-						try:
-							client.loop.create_task(self.post_announcement(destinationChannel, embed))
-						except:
-							pass
+					else:
+						raise Exception("no destination found")
 
 		except Exception:
 			print(traceback.format_exc())
@@ -558,17 +542,17 @@ class Alpha(discord.AutoShardedClient):
 			countMap = {}
 			for guild in client.guilds:
 				if self.guildProperties[guild.id]["settings"]["setup"]["completed"] and self.guildProperties[guild.id]["addons"]["satellites"].get("connection") is not None:
-					accountProperties = self.accountProperties[self.guildProperties[guild.id]["addons"]["satellites"]["connection"]]
+					accountProperties = self.accountProperties.get(self.guildProperties[guild.id]["addons"]["satellites"]["connection"])
 					satellitesEnabled = self.guildProperties[guild.id]["addons"]["satellites"]["enabled"]
-					isPro = accountProperties["customer"]["personalSubscription"].get("subscription", None) is not None
+					isPro = accountProperties is not None and accountProperties["customer"]["personalSubscription"].get("subscription", None) is not None
 
 					satelliteCount = 0
 					serverMembers = [e.id for e in guild.members]
-					for key, value in constants.satellites.items():
-						if value in serverMembers:
+					for botId in constants.satellites:
+						if botId in serverMembers:
 							satelliteCount += 1
 
-					if satelliteCount > 0:
+					if satelliteCount != self.guildProperties[guild.id]["addons"]["satellites"].get("count", 0):
 						if satellitesEnabled and not isPro:
 							database.document("discord/properties/guilds/{}".format(guild.id)).set({"addons": {"satellites": {"enabled": False, "count": 0}}}, merge=True)
 						
@@ -718,10 +702,11 @@ class Alpha(discord.AutoShardedClient):
 			messageRequest = MessageRequest(
 				raw=_rawMessage,
 				content=_messageContent,
+				accountId=self.account_id_for(_authorId),
 				authorId=_authorId,
 				guildId=_guildId,
-				accountProperties=({} if self.account_id_for(_authorId) is None else self.accountProperties[self.account_id_for(_authorId)]),
-				guildProperties=({} if _guildId not in self.guildProperties else self.guildProperties[_guildId])
+				accountProperties=(self.accountProperties.get(str(_authorId), {}) if self.account_id_for(_authorId) is None else self.accountProperties[self.account_id_for(_authorId)]),
+				guildProperties=self.guildProperties.get(_guildId, {})
 			)
 			sentMessages = []
 
@@ -1391,16 +1376,19 @@ class Alpha(discord.AutoShardedClient):
 						if footerText.startswith("Alert") and " ● id: " in footerText:
 							alertId = footerText.split(" ● id: ")[1]
 							accountId = self.account_id_for(user.id)
-							marketAlerts = self.accountProperties[accountId].get("marketAlerts", [])
 							
-							try:
-								marketAlerts.remove(alertId)
+							if accountId is None:
+								marketAlerts = self.accountProperties[user.id].get("marketAlerts", [])
+								try: marketAlerts.remove(alertId)
+								except: pass
+								database.document("details/marketAlerts/{}/{}".format(user.id, alertId)).delete()
+								database.document("discord/properties/users/{}".format(user.id)).set({"marketAlerts": marketAlerts}, merge=True)
+							else:
+								marketAlerts = self.accountProperties[accountId].get("marketAlerts", [])
+								try: marketAlerts.remove(alertId)
+								except: pass
 								database.document("details/marketAlerts/{}/{}".format(accountId, alertId)).delete()
-								if "customer" in self.accountProperties[accountId]:
-									database.document("accounts/{}".format(self.account_id_for(user.id))).set({"marketAlerts": marketAlerts}, merge=True)
-								else:
-									database.document("discord/properties/users/{}".format(user.id)).set({"marketAlerts": marketAlerts}, merge=True)
-							except: pass
+								database.document("accounts/{}".format(accountId)).set({"marketAlerts": marketAlerts}, merge=True)
 
 							embed = discord.Embed(title="Alert deleted", color=constants.colors["gray"])
 							embed.set_footer(text=footerText)
@@ -1786,7 +1774,7 @@ class Alpha(discord.AutoShardedClient):
 
 			if method in ["set", "create", "add"]:
 				if messageRequest.price_alerts_available():
-					outputMessage, request = Processor.process_quote_arguments(messageRequest, arguments[2:], tickerId=arguments[1].upper(), platform=platform, isMarketAlert=True, excluded=["CoinGecko", "LLD"])
+					outputMessage, request = Processor.process_quote_arguments(messageRequest, arguments[2:], tickerId=arguments[1].upper(), platform=platform, isMarketAlert=True, excluded=["CoinGecko", "Quandl", "LLD"])
 					if outputMessage is not None:
 						if not messageRequest.is_muted() and messageRequest.is_registered() and outputMessage != "":
 							embed = discord.Embed(title=outputMessage, description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/guide/alpha-bot/price-alerts).", color=constants.colors["gray"])
@@ -1819,14 +1807,18 @@ class Alpha(discord.AutoShardedClient):
 						levelText = Utils.format_price(exchange.properties, ticker.symbol, newAlert["level"])
 					elif request.currentPlatform == "CoinGecko":
 						levelText = ("{:,.%df}" % (4 if TickerParser.check_if_fiat(ticker.quote)[0] and not ticker.isReversed else 8)).format(newAlert["level"])
-					elif request.currentPlatform == "IEXC":
+					elif request.currentPlatform == "IEXC" or request.currentPlatform == "Quandl":
 						levelText = "{:,.5f}".format(newAlert["level"])
 					else:
 						levelText = "{:,.0f}".format(newAlert["level"])
 
 					for key in marketAlerts:
-						alert = database.document("details/marketAlerts/{}/{}".format(messageRequest.authorId, key)).get().to_dict()
+						if messageRequest.is_registered():
+							alert = database.document("details/marketAlerts/{}/{}".format(self.account_id_for(messageRequest.authorId), key)).get().to_dict()
+						else:
+							alert = database.document("details/marketAlerts/{}/{}".format(messageRequest.authorId, key)).get().to_dict()
 						alertRequest = pickle.loads(zlib.decompress(alert["request"]))
+
 						alertExchange = alertRequest.get_exchange()
 						if alertRequest.get_ticker() == ticker and alertRequest.currentPlatform == request.currentPlatform and ((alertExchange is None and exchange is None) or alertExchange.id == exchange.id) and alert["level"] == newAlert["level"]:
 							embed = discord.Embed(title="Price alert for {} ({}) at {} {} already exists.".format(ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote), color=constants.colors["gray"])
@@ -1834,9 +1826,9 @@ class Alpha(discord.AutoShardedClient):
 							sentMessages.append(await message.channel.send(embed=embed))
 							return (sentMessages, len(sentMessages))
 
-					payload, quoteText = await Processor.execute_data_server_request("quote", request)
+					payload, quoteText = await Processor.execute_data_server_request("candle", request)
 					
-					if payload is None or payload["quotePrice"] is None:
+					if payload is None or len(payload.get("candles", [])) == 0:
 						errorMessage = "Requested price alert for `{}` is not available.".format(request.get_ticker().name) if quoteText is None else quoteText
 						embed = discord.Embed(title=errorMessage, color=constants.colors["gray"])
 						embed.set_author(name="Data not available", icon_url=static_storage.icon_bw)
@@ -1846,23 +1838,26 @@ class Alpha(discord.AutoShardedClient):
 						except: pass
 					else:
 						request.set_current(platform=payload["platform"])
-						if payload["raw"]["quotePrice"][0] * 0.523 > newAlert["level"] or payload["raw"]["quotePrice"][0] * 1.523 < newAlert["level"]:
-							embed = discord.Embed(title="Your desired alert trigger level at {} {} is too far from the current price of {} {}.".format(levelText, ticker.quote, payload["quotePrice"], payload["quoteTicker"]), color=constants.colors["gray"])
+						if payload["candles"][0][4] * 0.5 > newAlert["level"] or payload["candles"][0][4] * 2 < newAlert["level"]:
+							embed = discord.Embed(title="Your desired alert trigger level at {} {} is too far from the current price of {} {}.".format(levelText, ticker.quote, payload["candles"][0][4], payload["quoteTicker"]), color=constants.colors["gray"])
 							embed.set_author(name="Price alerts", icon_url=static_storage.icon_bw)
 							embed.set_footer(text="Price {}".format(payload["sourceText"]))
 							sentMessages.append(await message.channel.send(embed=embed))
 							return (sentMessages, len(sentMessages))
 
+						newAlert["placement"] = "above" if newAlert["level"] > payload["candles"][0][4] else "below"
 						marketAlerts.append(alertId)
-						if not messageRequest.is_registered():
-							database.document("details/marketAlerts/{}/{}".format(messageRequest.authorId, alertId)).delete()
-							database.document("discord/properties/users/{}".format(messageRequest.authorId)).set({"marketAlerts": marketAlerts}, merge=True)
-						elif messageRequest.serverwide_command_presets_available():
-							database.document("details/marketAlerts/{}/{}".format(self.account_id_for(messageRequest.authorId), alertId)).delete()
-							database.document("accounts/{}".format(self.account_id_for(messageRequest.authorId))).set({"marketAlerts": marketAlerts}, merge=True)
-						elif messageRequest.personal_command_presets_available():
-							database.document("details/marketAlerts/{}/{}".format(self.account_id_for(messageRequest.authorId), alertId)).delete()
-							database.document("accounts/{}".format(self.account_id_for(messageRequest.authorId))).set({"marketAlerts": marketAlerts, "customer": {"addons": {"marketAlerts": 1}}}, merge=True)
+
+						async with message.channel.typing():
+							if not messageRequest.is_registered():
+								database.document("details/marketAlerts/{}/{}".format(messageRequest.authorId, alertId)).set(newAlert)
+								database.document("discord/properties/users/{}".format(messageRequest.authorId)).set({"marketAlerts": marketAlerts}, merge=True)
+							elif messageRequest.serverwide_command_presets_available():
+								database.document("details/marketAlerts/{}/{}".format(self.account_id_for(messageRequest.authorId), alertId)).set(newAlert)
+								database.document("accounts/{}".format(self.account_id_for(messageRequest.authorId))).set({"marketAlerts": marketAlerts}, merge=True)
+							elif messageRequest.personal_command_presets_available():
+								database.document("details/marketAlerts/{}/{}".format(self.account_id_for(messageRequest.authorId), alertId)).set(newAlert)
+								database.document("accounts/{}".format(self.account_id_for(messageRequest.authorId))).set({"marketAlerts": marketAlerts, "customer": {"addons": {"marketAlerts": 1}}}, merge=True)
 
 						embed = discord.Embed(title="Price alert set for {} ({}) at {} {}.".format(ticker.base, request.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote), color=constants.colors["deep purple"])
 						embed.set_author(name="Alert successfully set", icon_url=static_storage.icon)
@@ -1890,7 +1885,10 @@ class Alpha(discord.AutoShardedClient):
 					for index, key in enumerate(messageRequest.accountProperties.get("marketAlerts", [])):
 						await message.channel.trigger_typing()
 
-						alert = database.document("details/marketAlerts/{}/{}".format(self.account_id_for(messageRequest.authorId), key)).get().to_dict()
+						if messageRequest.is_registered():
+							alert = database.document("details/marketAlerts/{}/{}".format(self.account_id_for(messageRequest.authorId), key)).get().to_dict()
+						else:
+							alert = database.document("details/marketAlerts/{}/{}".format(messageRequest.authorId, key)).get().to_dict()
 						
 						alertRequest = pickle.loads(zlib.decompress(alert["request"]))
 						ticker = alertRequest.get_ticker()
@@ -1900,7 +1898,7 @@ class Alpha(discord.AutoShardedClient):
 							levelText = Utils.format_price(exchange.properties, ticker.symbol, alert["level"])
 						elif alertRequest.currentPlatform == "CoinGecko":
 							levelText = ("{:,.%df}" % (4 if TickerParser.check_if_fiat(ticker.quote)[0] and not ticker.isReversed else 8)).format(alert["level"])
-						elif alertRequest.currentPlatform == "IEXC":
+						elif alertRequest.currentPlatform == "IEXC" or alertRequest.currentPlatform == "Quandl":
 							levelText = "{:,.5f}".format(alert["level"])
 						else:
 							levelText = "{:,.0f}".format(alert["level"])
@@ -2090,7 +2088,7 @@ class Alpha(discord.AutoShardedClient):
 				request.set_current(platform=payload["platform"])
 				ticker = request.get_ticker()
 
-				embed = discord.Embed(title=payload["name"], description="Ranked #{} by market cap".format(payload["rank"]), color=constants.colors["lime"])
+				embed = discord.Embed(title=payload["name"], description="Ranked {} by market cap".format("*unknown*" if payload["rank"] is None else "#{}".format(payload["rank"])), color=constants.colors["lime"])
 				embed.set_thumbnail(url=payload["image"])
 
 				marketCap = "Market cap: no data"
@@ -2168,7 +2166,7 @@ class Alpha(discord.AutoShardedClient):
 
 					embed = discord.Embed(title="Top Alpha Bot requests", color=constants.colors["deep purple"])
 					for token in response:
-						embed.add_field(name=token["id"], value="Rank {:,.1f}/100".format(token["rank"]), inline=True)
+						embed.add_field(name=token["id"], value="Rank {:,.2f}/100".format(token["rank"]), inline=True)
 					sentMessages.append(await message.channel.send(embed=embed))
 
 				elif messageRequest.is_pro():
@@ -2189,7 +2187,7 @@ class Alpha(discord.AutoShardedClient):
 			elif method in ["gainers", "gain", "gains"]:
 				response = []
 				async with message.channel.typing():
-					rawData = self.coinGecko.get_coins_markets(vs_currency="usd", order="market_cap_desc", per_page=250, price_change_percentage="24h")
+					rawData = CoinGeckoAPI().get_coins_markets(vs_currency="usd", order="market_cap_desc", per_page=250, price_change_percentage="24h")
 					for e in rawData:
 						if e.get("price_change_percentage_24h_in_currency", None) is not None:
 							response.append({"symbol": e["symbol"].upper(), "change": e["price_change_percentage_24h_in_currency"]})
@@ -2197,13 +2195,13 @@ class Alpha(discord.AutoShardedClient):
 				
 				embed = discord.Embed(title="Top gainers", color=constants.colors["deep purple"])
 				for token in response:
-					embed.add_field(name=token["symbol"], value="Gained {:,.1f} %".format(token["change"]), inline=True)
+					embed.add_field(name=token["symbol"], value="Gained {:,.2f} %".format(token["change"]), inline=True)
 				sentMessages.append(await message.channel.send(embed=embed))
 
 			elif method in ["losers", "loosers", "loss", "losses"]:
 				response = []
 				async with message.channel.typing():
-					rawData = self.coinGecko.get_coins_markets(vs_currency="usd", order="market_cap_desc", per_page=250, price_change_percentage="24h")
+					rawData = CoinGeckoAPI().get_coins_markets(vs_currency="usd", order="market_cap_desc", per_page=250, price_change_percentage="24h")
 					for e in rawData:
 						if e.get("price_change_percentage_24h_in_currency", None) is not None:
 							response.append({"symbol": e["symbol"].upper(), "change": e["price_change_percentage_24h_in_currency"]})
@@ -2211,7 +2209,7 @@ class Alpha(discord.AutoShardedClient):
 				
 				embed = discord.Embed(title="Top losers", color=constants.colors["deep purple"])
 				for token in response:
-					embed.add_field(name=token["symbol"], value="Lost {:,.1f} %".format(token["change"]), inline=True)
+					embed.add_field(name=token["symbol"], value="Lost {:,.2f} %".format(token["change"]), inline=True)
 				sentMessages.append(await message.channel.send(embed=embed))
 
 		except asyncio.CancelledError: pass
@@ -2801,7 +2799,7 @@ if __name__ == "__main__":
 	intents.typing = False
 	intents.presences = False
 
-	client = Alpha(intents=intents, chunk_guilds_at_startup=False, status=discord.Status.idle, activity=discord.Activity(type=discord.ActivityType.playing, name="startup"))
+	client = Alpha(intents=intents, chunk_guilds_at_startup=False, status=discord.Status.idle, activity=discord.Activity(type=discord.ActivityType.playing, name="a reboot, brb!"))
 	print("[Startup]: object initialization complete")
 	client.prepare()
 
@@ -2817,4 +2815,4 @@ if __name__ == "__main__":
 		except:
 			handle_exit()
 
-		client = Alpha(loop=client.loop, intents=intents, chunk_guilds_at_startup=False, status=discord.Status.idle, activity=discord.Activity(type=discord.ActivityType.playing, name="startup"))
+		client = Alpha(loop=client.loop, intents=intents, chunk_guilds_at_startup=False, status=discord.Status.idle, activity=discord.Activity(type=discord.ActivityType.playing, name="a reboot, brb!"))

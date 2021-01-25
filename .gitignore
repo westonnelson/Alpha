@@ -1,6 +1,7 @@
 keys/
-libraries/
-services/
+libraries/requests/
+services/images
+services/trades
 
 *.pyc
 *.log

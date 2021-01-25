@@ -1,0 +1,11 @@
+selenium>=3.12.0
+google-cloud-error-reporting>=0.33.0
+google-cloud-firestore>=1.9.0
+ccxt>=1.39.33
+iexfinance>=0.4.3
+pycoingecko>=0.3.0
+pyvirtualdisplay>=0.2.5
+PyUserInput>=0.1.11
+pytz>=2019.2
+matplotlib>=3.1.1
+pyzmq>=18.1.1

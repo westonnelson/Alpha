@@ -101,6 +101,8 @@ services:
     secrets:
      - source: alpha-service-keys
        target: alpha-service/key
+     - source: api-keys-decryption-key
+       target: api-keys-decryption/key
      - source: google-cloud-auth
        target: google-cloud-auth/key
     depends_on:
@@ -114,6 +116,8 @@ services:
     volumes:
       - ./services/jobs:/usr/src/cron-jobs
       - ./libraries:/usr/src/cron-jobs/libraries
+    ports:
+     - "6906:6900"
     secrets:
       - source: alpha-service-keys
         target: alpha-service/key
@@ -122,6 +126,7 @@ services:
     depends_on:
      - parser
      - candle-server
+     - trade-server
 
   discord-bot:
     image: alphabotsystem/alpha-discord-bot
@@ -206,6 +211,8 @@ services:
 secrets:
   alpha-service-keys:
     file: ./keys/credentials
+  api-keys-decryption-key:
+    file: ./keys/api_keys_decryption_key
   alpha-satellite-keys:
     file: ./keys/satellites
   google-cloud-auth:

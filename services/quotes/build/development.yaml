@@ -1,35 +1,32 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: satellite-development
+  name: quote-server-development
   labels:
-    app: satellite
+    app: quote-server
 spec:
-  replicas: 60
+  replicas: 1
   selector:
     matchLabels:
-      app: satellite
+      app: quote-server
   template:
     metadata:
       labels:
-        app: satellite
+        app: quote-server
     spec:
       containers:
-      - name: satellite
-        image: alphabotsystem/alpha-satellites
+      - name: quote-server
+        image: alphabotsystem/alpha-quote-server
         imagePullPolicy: IfNotPresent
         volumeMounts:
           - name: alpha-service-keys
             mountPath: /run/secrets/alpha-service
             readOnly: true
-          - name: alpha-satellite-keys
-            mountPath: /run/secrets/alpha-satellites
-            readOnly: true
           - name: google-cloud-auth
             mountPath: /run/secrets/google-cloud-auth
             readOnly: true
         ports:
-          - containerPort: 6911
+        - containerPort: 6900
       volumes:
         - name: alpha-service-keys
           secret:
@@ -37,15 +34,22 @@ spec:
             items:
               - key: credentials
                 path: key
-        - name: alpha-satellite-keys
-          secret:
-            secretName: alpha-satellite-keys
-            items:
-              - key: satellites
-                path: key
         - name: google-cloud-auth
           secret:
             secretName: google-cloud-auth
             items:
               - key: gcloud_credentials.json
                 path: key
+---
+apiVersion: v1
+kind: Service   
+metadata:
+  name: quote-server
+spec:
+  type: LoadBalancer
+  selector:
+    app: quote-server
+  ports:
+    - protocol: TCP
+      port: 6900
+      targetPort: 6900

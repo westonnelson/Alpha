@@ -1,35 +1,39 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: satellite-development
+  name: detail-server
   labels:
-    app: satellite
+    app: detail-server
 spec:
-  replicas: 60
+  replicas: 1
   selector:
     matchLabels:
-      app: satellite
+      app: detail-server
   template:
     metadata:
       labels:
-        app: satellite
+        app: detail-server
     spec:
       containers:
-      - name: satellite
-        image: alphabotsystem/alpha-satellites
-        imagePullPolicy: IfNotPresent
+      - name: detail-server
+        image: gcr.io/nlc-bot-36685/alpha-detail-server
+        imagePullPolicy: Always
+        env:
+          - name: PRODUCTION_MODE
+            value: "1"
         volumeMounts:
           - name: alpha-service-keys
             mountPath: /run/secrets/alpha-service
             readOnly: true
-          - name: alpha-satellite-keys
-            mountPath: /run/secrets/alpha-satellites
-            readOnly: true
           - name: google-cloud-auth
             mountPath: /run/secrets/google-cloud-auth
             readOnly: true
+        resources:
+          requests:
+            memory: "50Mi"
+            cpu: "1m"
         ports:
-          - containerPort: 6911
+          - containerPort: 6900
       volumes:
         - name: alpha-service-keys
           secret:
@@ -37,15 +41,22 @@ spec:
             items:
               - key: credentials
                 path: key
-        - name: alpha-satellite-keys
-          secret:
-            secretName: alpha-satellite-keys
-            items:
-              - key: satellites
-                path: key
         - name: google-cloud-auth
           secret:
             secretName: google-cloud-auth
             items:
               - key: gcloud_credentials.json
                 path: key
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: detail-server
+spec:
+  type: LoadBalancer
+  selector:
+    app: detail-server
+  ports:
+    - protocol: TCP
+      port: 6900
+      targetPort: 6900

@@ -1,8 +1,9 @@
-discord.py>=1.5.1
 google-cloud-error-reporting>=0.33.0
 google-cloud-firestore>=1.9.0
-google-assistant-sdk[samples]
+ccxt>=1.39.33
 pycoingecko>=0.3.0
+iexfinance>=0.4.3
 pytz>=2019.2
-dblpy>=0.4.0
-stripe>=2.49.0
+pyzmq>=18.1.1
+websockets>=8.1
+jsonrpcclient[websockets]>=3.3.6

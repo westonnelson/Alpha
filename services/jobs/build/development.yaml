@@ -1,47 +1,38 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: satellite-development
+  name: cron-jobs-development
   labels:
-    app: satellite
+    app: cron-jobs
 spec:
-  replicas: 60
+  replicas: 1
   selector:
     matchLabels:
-      app: satellite
+      app: cron-jobs
   template:
     metadata:
       labels:
-        app: satellite
+        app: cron-jobs
     spec:
       containers:
-      - name: satellite
-        image: alphabotsystem/alpha-satellites
+      - name: cron-jobs
+        image: alphabotsystem/alpha-cron-jobs
         imagePullPolicy: IfNotPresent
         volumeMounts:
           - name: alpha-service-keys
             mountPath: /run/secrets/alpha-service
             readOnly: true
-          - name: alpha-satellite-keys
-            mountPath: /run/secrets/alpha-satellites
-            readOnly: true
           - name: google-cloud-auth
             mountPath: /run/secrets/google-cloud-auth
             readOnly: true
         ports:
-          - containerPort: 6911
+          - containerPort: 6906
       volumes:
         - name: alpha-service-keys
           secret:
             secretName: alpha-service-keys
             items:
               - key: credentials
-                path: key
-        - name: alpha-satellite-keys
-          secret:
-            secretName: alpha-satellite-keys
-            items:
-              - key: satellites
                 path: key
         - name: google-cloud-auth
           secret:

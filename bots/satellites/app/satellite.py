@@ -137,7 +137,10 @@ class Alpha(discord.Client):
 				t = datetime.datetime.now().astimezone(pytz.utc)
 				timeframes = Utils.get_accepted_timeframes(t)
 
-				if "1m" in timeframes:
+				isPremium = self.tickerId in ["EURUSD", "GBPUSD"]
+				refreshRate = "1m" if not isPremium or len(client.guilds) > 15 else "15m"
+
+				if refreshRate in timeframes:
 					self.get_assigned_id()
 					await asyncio.sleep(self.timeOffset)
 
@@ -147,16 +150,16 @@ class Alpha(discord.Client):
 						if os.environ["PRODUCTION_MODE"]: self.logging.report(outputMessage)
 						continue
 
-					payload, quoteText = await Processor.execute_data_server_request("quote", request, timeout=10)
+					payload, quoteText = await Processor.execute_data_server_request("quote", request, timeout=30)
 					if payload is None or payload["quotePrice"] is None:
 						print("Requested price for `{}` is not available".format(request.get_ticker().name) if quoteText is None else quoteText)
 						continue
 
 					priceText = "{} {}".format(payload["quotePrice"], payload["quoteTicker"])
-					if request.get_exchange() is not None:
-						statusText = "{:+.2f} % | {} | alphabotsystem.com".format(payload["change"], request.get_exchange().name)
-					else:
-						statusText = "{:+.2f} % | alphabotsystem.com".format(payload["change"])
+					changeText = "" if payload["change"] is None else "{:+.2f} % | ".format(payload["change"])
+					tickerText = "{} | ".format(request.get_ticker().id) if request.get_exchange() is None else "{} on {} | ".format(request.get_ticker().id, request.get_exchange().name)
+					statusText = "{}{}alphabotsystem.com".format(changeText, tickerText)
+					status = discord.Status.online if payload["change"] is None or payload["change"] >= 0 else discord.Status.dnd
 
 					for guild in client.guilds:
 						if not self.isFree and (guild.id not in self.guildProperties or not self.guildProperties[guild.id]["addons"]["satellites"]["enabled"]):
@@ -169,7 +172,8 @@ class Alpha(discord.Client):
 							try: await guild.me.edit(nick="Alpha Pro required")
 							except: continue
 
-					await client.change_presence(status=(discord.Status.online if payload["change"] >= 0 else discord.Status.dnd), activity=discord.Activity(type=discord.ActivityType.watching, name=statusText))
+					try: await client.change_presence(status=status, activity=discord.Activity(type=discord.ActivityType.watching, name=statusText))
+					except: pass
 
 			except asyncio.CancelledError: return
 			except Exception:

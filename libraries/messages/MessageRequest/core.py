@@ -1,0 +1,189 @@
+class MessageRequest(object):
+	def __init__(self, raw=None, content=None, accountId=None, authorId=None, guildId=None, presetUsed=False, accountProperties={}, guildProperties={}):
+		self.raw = raw
+		self.content = content
+
+		self.accountId = accountId
+		self.authorId = authorId
+		self.guildId = guildId
+
+		self.accountProperties = accountProperties
+		self.guildProperties = MessageRequest.create_guild_settings(guildProperties)
+
+		self.presetUsed = False
+
+		self.autodelete = guildProperties["settings"]["messageProcessing"]["autodelete"]
+
+	
+	# -------------------------
+	# Properties
+	# -------------------------
+
+	def is_muted(self):
+		return False
+
+	def get_limit(self):
+		return 30 if self.is_registered() else 10
+
+	
+	# -------------------------
+	# Charting platforms
+	# -------------------------
+
+	def get_platform_order_for(self, commandType):
+		if commandType == "charts":
+			if self.guildProperties["settings"]["messageProcessing"]["bias"] == "traditional":
+				return [] + (self.accountProperties["settings"]["charts"]["preferredOrder"] if "settings" in self.accountProperties else ["TradingView", "Finviz", "Alternative.me", "Woobull Charts", "TradingLite", "GoCharting", "Bookmap"])
+			else:
+				return ["Alternative.me", "Woobull Charts"] + (self.accountProperties["settings"]["charts"]["preferredOrder"] if "settings" in self.accountProperties else ["TradingLite", "TradingView", "GoCharting", "Finviz", "Bookmap"])
+		elif commandType == "heatmaps":
+			if self.guildProperties["settings"]["messageProcessing"]["bias"] == "traditional":
+				return ["Finviz", "Bitgur"]
+			else:
+				return ["Bitgur", "Finviz"]
+		elif commandType == "quotes":
+			if self.guildProperties["settings"]["messageProcessing"]["bias"] == "traditional":
+				return ["IEXC", "Quandl", "Alternative.me", "LLD", "CoinGecko", "CCXT"]
+			else:
+				return ["Alternative.me", "LLD", "CoinGecko", "CCXT", "IEXC", "Quandl"]
+		elif commandType == "details":
+			if self.guildProperties["settings"]["messageProcessing"]["bias"] == "traditional":
+				return ["IEXC", "CoinGecko"]
+			else:
+				return ["CoinGecko", "IEXC"]
+		elif commandType == "trades":
+			return ["CCXT"]
+		else:
+			raise ValueError("incorrect commant type: {}".format(commandType))
+
+	
+	# -------------------------
+	# User properties
+	# -------------------------
+
+	def is_registered(self):
+		return "customer" in self.accountProperties
+
+	def is_pro(self):
+		return self.is_registered() and self.accountProperties["customer"]["personalSubscription"].get("plan", "free") == "price_HLr5Pnrj3yRWOP"
+	
+	def is_trialing(self):
+		return self.is_pro() and self.accountProperties["customer"]["personalSubscription"].get("trialing", False)
+
+
+	def personal_price_alerts_available(self):
+		return self.is_registered() and (self.is_trialing() or bool(self.accountProperties["customer"]["addons"].get("marketAlerts", 0)))
+
+	def personal_command_presets_available(self):
+		return self.is_registered() and (self.is_trialing() or bool(self.accountProperties["customer"]["addons"].get("commandPresets", 0)))
+
+	def personal_flow_available(self):
+		return self.is_registered() and (self.is_trialing() or bool(self.accountProperties["customer"]["addons"].get("flow", 0)))
+
+	def personal_statistics_available(self):
+		return self.is_registered() and (self.is_trialing() or bool(self.accountProperties["customer"]["addons"].get("statistics", 0)))
+
+
+	# -------------------------
+	# Server properties
+	# -------------------------
+
+	def serverwide_ads_disabled(self):
+		return self.guildProperties["addons"]["noads"]["enabled"]
+
+	def serverwide_price_alerts_available(self):
+		return self.guildProperties["addons"]["marketAlerts"]["enabled"]
+
+	def serverwide_command_presets_available(self):
+		return self.guildProperties["addons"]["commandPresets"]["enabled"]
+
+	def serverwide_flow_available(self):
+		return self.guildProperties["addons"]["flow"]["enabled"]
+
+	def serverwide_statistics_available(self):
+		return self.guildProperties["addons"]["statistics"]["enabled"]
+
+
+	# -------------------------
+	# Global properties
+	# -------------------------
+
+	def ads_disabled(self):
+		return self.serverwide_ads_disabled()
+
+	def price_alerts_available(self):
+		return self.serverwide_price_alerts_available() or self.personal_price_alerts_available()
+	
+	def command_presets_available(self):
+		return self.serverwide_command_presets_available() or self.personal_command_presets_available()
+	
+	def flow_available(self):
+		return self.serverwide_flow_available() or self.personal_flow_available()
+	
+	def statistics_available(self):
+		return self.serverwide_statistics_available() or self.personal_statistics_available()
+
+
+	# -------------------------
+	# Helpers
+	# -------------------------
+
+	@staticmethod
+	def create_guild_settings(settings):
+		settingsTemplate = {
+			"addons": {
+				"satellites": {
+					"enabled": False
+				},
+				"noads": {
+					"enabled": False
+				},
+				"marketAlerts": {
+					"enabled": False
+				},
+				"commandPresets": {
+					"enabled": False
+				},
+				"flow": {
+					"enabled": False
+				},
+				"statistics": {
+					"enabled": False
+				}
+			},
+			"settings": {
+				"setup": {
+					"completed": False,
+					"connection": None,
+					"tos": 1.0
+				},
+				"charts": {
+					"defaults": {
+						"exchange": None
+					}
+				},
+				"assistant": {
+					"enabled": True
+				},
+				"messageProcessing": {
+					"bias": "traditional",
+					"autodelete": False
+				}
+			}
+		}
+
+		if settings is None: settings = {}
+		MessageRequest.__recursive_fill(settings, settingsTemplate)
+
+		return settings
+
+	@staticmethod
+	def __recursive_fill(settings, template):
+		for e in template:
+			if type(template[e]) is dict:
+				if e not in settings:
+					settings[e] = template[e].copy()
+				else:
+					MessageRequest.__recursive_fill(settings[e], template[e])
+			elif e not in settings:
+				settings[e] = template[e]

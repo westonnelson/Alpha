@@ -1,4 +1,3 @@
-docker image prune -f
 COMPOSE_DOCKER_CLI_BUILD=1 docker-compose build
 docker tag alphabotsystem/alpha-parser gcr.io/nlc-bot-36685/alpha-parser
 docker tag alphabotsystem/alpha-candle-server gcr.io/nlc-bot-36685/alpha-candle-server
