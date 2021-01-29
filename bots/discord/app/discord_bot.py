@@ -873,19 +873,6 @@ class Alpha(discord.AutoShardedClient):
 							await message.channel.send(content="Visit https://www.alphabotsystem.com/pro to learn more about Alpha Pro and how to start your free trial.")
 						elif response == "invite":
 							await message.channel.send(content="https://discord.com/oauth2/authorize?client_id=401328409499664394&scope=bot&permissions=604372032")
-						elif response == "vote":
-							await message.channel.send(content="https://top.gg/bot/401328409499664394/vote")
-						elif response == "referrals":
-							embed = discord.Embed(title="Alpha referral links", color=constants.colors["deep purple"])
-							embed.add_field(name="Binance", value="Get 10% kickback on all commissions when trading on Binance by [signing up here](https://www.binance.com/en/register?ref=PJF2KLMW)", inline=False)
-							embed.add_field(name="Bitmex", value="Get 10% fee discount for the first 6 months when trading on BitMEX by [signing up here](https://www.bitmex.com/register/Cz9JxF)", inline=False)
-							embed.add_field(name="TradingView", value="Get $30 after purchasing a paid plan on TradingView by [signing up here](https://www.tradingview.com/gopro/?share_your_love=AlphaBotSystem)", inline=False)
-							embed.add_field(name="FTX", value="Get a 5% fee discount on all your trades on FTX by [signing up here](https://ftx.com/#a=Alpha)", inline=False)
-							embed.add_field(name="Coinbase", value="Get $13 on Coinbase after [signing up here](https://www.coinbase.com/join/conrad_78)", inline=False)
-							embed.add_field(name="Deribit", value="Get 10% fee discount for the first 6 months when trading on Deribit by [signing up here](https://www.deribit.com/reg-8980.6502)", inline=False)
-							await message.channel.send(embed=embed)
-						elif response == "settings":
-							pass
 					elif response is not None and response != "":
 						await message.channel.send(content=response)
 				elif messageRequest.content.startswith("preset "):
@@ -1478,7 +1465,7 @@ class Alpha(discord.AutoShardedClient):
 	async def add_tip_message(self, message, messageRequest, command=None):
 		if not messageRequest.ads_disabled() and random.randint(0, 20) == 1:
 			c = command
-			while c == command: c, textSet = random.choice(list(constants.supportMessages.items()))
+			while c == command: c, textSet = random.choice(list(constants.supportMessages[messageRequest.guildProperties["settings"]["messageProcessing"]["bias"]].items()))
 			selectedTip = random.choice(textSet)
 			await message.channel.send(embed=discord.Embed(title=selectedTip[0], description=selectedTip[1], color=constants.colors["light blue"]))
 

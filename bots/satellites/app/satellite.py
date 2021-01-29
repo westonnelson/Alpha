@@ -138,7 +138,7 @@ class Alpha(discord.Client):
 				timeframes = Utils.get_accepted_timeframes(t)
 
 				isPremium = self.tickerId in ["EURUSD", "GBPUSD"]
-				refreshRate = "1m" if not isPremium or len(client.guilds) > 15 else "15m"
+				refreshRate = "1m" if len(client.guilds) > 1 and (not isPremium or len(client.guilds) > 15) else "15m"
 
 				if refreshRate in timeframes:
 					self.get_assigned_id()
