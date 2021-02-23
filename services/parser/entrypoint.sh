@@ -1,2 +1,7 @@
 source /run/secrets/alpha-service/key
-python -u app/parser.py
+if [[ $PRODUCTION_MODE == "1" ]]
+then
+	python -u app/parser.py
+else
+	python -u app/parser.py
+fi

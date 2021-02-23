@@ -1,5 +1,5 @@
 import os
-import sys
+import signal
 import time
 import uuid
 from threading import Thread
@@ -10,21 +10,22 @@ import traceback
 
 import ccxt
 from iexfinance.stocks import Stock
-from google.cloud import firestore, error_reporting
+from google.cloud import error_reporting
 
-from engine.cache import Cache
+from Cache import Cache
 from TickerParser import TickerParser, Ticker, Exchange, supported
 
 from helpers.utils import Utils
-
-
-database = firestore.Client()
 
 
 class CandleProcessor(object):
 	stableCoinTickers = ["USD", "USDT", "USDC", "DAI", "HUSD", "TUSD", "PAX", "USDK", "USDN", "BUSD", "GUSD", "USDS"]
 
 	def __init__(self):
+		self.isServiceAvailable = True
+		signal.signal(signal.SIGINT, self.exit_gracefully)
+		signal.signal(signal.SIGTERM, self.exit_gracefully)
+
 		self.logging = error_reporting.Client()
 		self.cache = Cache(ttl=30)
 
@@ -34,13 +35,18 @@ class CandleProcessor(object):
 
 		print("[Startup]: Candle Server is online")
 
+	def exit_gracefully(self):
+		print("[Startup]: Candle Server is exiting")
+		self.socket.close()
+		self.isServiceAvailable = False
+
 	def run(self):
-		while True:
-			origin, delimeter, clientId, service, request = self.socket.recv_multipart()
+		while self.isServiceAvailable:
 			try:
 				response = None, None
+				origin, delimeter, clientId, service, request = self.socket.recv_multipart()
 				request = pickle.loads(zlib.decompress(request))
-				# if request.timestamp + 30 < time.time(): continue
+				if request.timestamp + 30 < time.time(): continue
 
 				if service == b"candle":
 					response = self.request_candle(request)
@@ -50,7 +56,8 @@ class CandleProcessor(object):
 				print(traceback.format_exc())
 				if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
 			finally:
-				self.socket.send_multipart([origin, delimeter, zlib.compress(pickle.dumps(response, -1))])
+				try: self.socket.send_multipart([origin, delimeter, zlib.compress(pickle.dumps(response, -1))])
+				except: pass
 
 	def request_candle(self, request):
 		payload, candleMessage, updatedCandleMessage = None, None, None

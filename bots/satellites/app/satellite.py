@@ -19,6 +19,7 @@ import discord
 from google.cloud import firestore, error_reporting
 
 from Processor import Processor
+from DatabaseConnector import DatabaseConnector
 
 from helpers.utils import Utils
 
@@ -35,15 +36,12 @@ class Alpha(discord.Client):
 	lastPing = 0
 	exponentialBakcoff = 0
 
-	guildProperties = {}
+	guildProperties = DatabaseConnector(mode="guild")
 
 	tickerId = None
 	exchange = None
 	platform = None
 	isFree = False
-
-	discordPropertiesGuildsLink = None
-	dataserverParserIndexLink = None
 
 
 	def prepare(self):
@@ -52,12 +50,10 @@ class Alpha(discord.Client):
 		"""
 
 		Processor.clientId = b"discord_satellite"
-		self.executor = concurrent.futures.ThreadPoolExecutor()
 		self.logging = error_reporting.Client()
 		self.timeOffset = randint(0, 30)
 
-		self.discordPropertiesGuildsLink = database.collection("discord/properties/guilds").where("addons.satellites.enabled", "==", True).on_snapshot(self.update_guild_properties)
-		print("[Startup]: database link activated")
+		self.priceText = None
 
 		time.sleep(self.timeOffset)
 		self.clientName = str(uuid.uuid4())
@@ -77,7 +73,8 @@ class Alpha(discord.Client):
 	def get_assigned_id(self):
 		try:
 			currentSelectedId = self.clientId
-			assignments = database.document("dataserver/satellites").get().to_dict()
+			tasks = database.collection("dataserver/configuration/satellites").get()
+			assignments = {doc.id: doc.to_dict() for doc in tasks}
 			
 			if self.clientId is None or assignments[self.clientId]["uuid"] != self.clientName:
 				for clientId in assignments:
@@ -85,7 +82,7 @@ class Alpha(discord.Client):
 						currentSelectedId = clientId
 
 			if os.environ["PRODUCTION_MODE"] and time.time() > self.lastPing:
-				database.document("dataserver/satellites").set({currentSelectedId: {"ping": int(time.time()), "uuid": self.clientName}}, merge=True)
+				database.document("dataserver/configuration/satellites/{}".format(currentSelectedId)).set({"ping": int(time.time()), "uuid": self.clientName}, merge=True)
 				self.lastPing = time.time() + 1 * 1.1 ** self.exponentialBakcoff
 				self.exponentialBakcoff += 1
 
@@ -105,22 +102,28 @@ class Alpha(discord.Client):
 			print(traceback.format_exc())
 			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
 
-	def update_guild_properties(self, settings, changes, timestamp):
-		"""Updates Discord guild properties
+	async def on_guild_join(self, guild):
+		"""Updates quild count on guild_join event and leaves all guilds flagged as banned
 
 		Parameters
 		----------
-		settings : [google.cloud.firestore_v1.document.DocumentSnapshot]
-			complete document snapshot
-		changes : [google.cloud.firestore_v1.watch.DocumentChange]
-			database changes in the sent snapshot
-		timestamp : int
-			timestamp indicating time of change in the database
+		guild : discord.Guild
+			Guild object passed by discord.py
 		"""
 
 		try:
-			for change in changes:
-				self.guildProperties[int(change.document.id)] = change.document.to_dict()
+			properties = await self.guildProperties.get(guild.id)
+			if properties is None:
+				return
+			elif not self.isFree and not properties["addons"]["satellites"]["enabled"]:
+				try: await guild.me.edit(nick="Disabled")
+				except: return
+			elif self.isFree or properties["addons"]["satellites"]["connection"] is not None:
+				try: await guild.me.edit(nick=self.priceText)
+				except: return
+			else:
+				try: await guild.me.edit(nick="Alpha Pro required")
+				except: return
 		except Exception:
 			print(traceback.format_exc())
 			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
@@ -133,40 +136,46 @@ class Alpha(discord.Client):
 		while True:
 			try:
 				await asyncio.sleep(Utils.seconds_until_cycle())
-				if not self.isBotReady: continue
+				if not await self.guildProperties.check_status(): continue
 				t = datetime.datetime.now().astimezone(pytz.utc)
 				timeframes = Utils.get_accepted_timeframes(t)
 
-				isPremium = self.tickerId in ["EURUSD", "GBPUSD"]
-				refreshRate = "1m" if len(client.guilds) > 1 and (not isPremium or len(client.guilds) > 15) else "15m"
+				isPremium = self.tickerId in ["EURUSD", "GBPUSD", "AUDJPY", "AUDUSD", "EURJPY", "GBPJPY", "NZDJPY", "NZDUSD", "CADUSD", "JPYUSD", "ZARUSD"]
+				refreshRate = "5m" if len(client.guilds) > 1 and (not isPremium or len(client.guilds) > 15) else "15m"
 
-				if refreshRate in timeframes:
+				if "1m" in timeframes:
 					self.get_assigned_id()
+				if refreshRate in timeframes:
 					await asyncio.sleep(self.timeOffset)
 
-					outputMessage, request = Processor.process_quote_arguments(client.user.id, [] if self.exchange is None else [self.exchange], tickerId=self.tickerId, platformQueue=[self.platform])
+					try: outputMessage, request = Processor.process_quote_arguments(client.user.id, [] if self.exchange is None else [self.exchange], tickerId=self.tickerId, platformQueue=[self.platform])
+					except: continue
 					if outputMessage is not None:
 						print(outputMessage)
 						if os.environ["PRODUCTION_MODE"]: self.logging.report(outputMessage)
 						continue
 
-					payload, quoteText = await Processor.execute_data_server_request("quote", request, timeout=30)
+					try: payload, quoteText = await Processor.execute_data_server_request("quote", request, timeout=30)
+					except: continue
 					if payload is None or payload["quotePrice"] is None:
 						print("Requested price for `{}` is not available".format(request.get_ticker().name) if quoteText is None else quoteText)
 						continue
 
-					priceText = "{} {}".format(payload["quotePrice"], payload["quoteTicker"])
+					self.priceText = "{} {}".format(payload["quotePrice"], payload["quoteTicker"])
 					changeText = "" if payload["change"] is None else "{:+.2f} % | ".format(payload["change"])
 					tickerText = "{} | ".format(request.get_ticker().id) if request.get_exchange() is None else "{} on {} | ".format(request.get_ticker().id, request.get_exchange().name)
 					statusText = "{}{}alphabotsystem.com".format(changeText, tickerText)
 					status = discord.Status.online if payload["change"] is None or payload["change"] >= 0 else discord.Status.dnd
 
 					for guild in client.guilds:
-						if not self.isFree and (guild.id not in self.guildProperties or not self.guildProperties[guild.id]["addons"]["satellites"]["enabled"]):
+						properties = await self.guildProperties.get(guild.id)
+						if properties is None:
+							continue
+						elif not self.isFree and not properties["addons"]["satellites"]["enabled"]:
 							try: await guild.me.edit(nick="Disabled")
 							except: continue
-						elif self.isFree or (guild.id in self.guildProperties and self.guildProperties[guild.id]["addons"]["satellites"]["connection"] is not None):
-							try: await guild.me.edit(nick=priceText)
+						elif self.isFree or properties["addons"]["satellites"]["connection"] is not None:
+							try: await guild.me.edit(nick=self.priceText)
 							except: continue
 						else:
 							try: await guild.me.edit(nick="Alpha Pro required")

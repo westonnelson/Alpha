@@ -7,6 +7,9 @@ WORKDIR /usr/src/discord-manager
 COPY ./bots/manager/build/requirements.txt ./bots/manager/entrypoint.sh ./
 RUN pip install -r ./requirements.txt
 
+COPY ./libraries ./libraries
+RUN pip install ./libraries/database
+
 # Copy source code
 COPY ./bots/manager/app ./app
 

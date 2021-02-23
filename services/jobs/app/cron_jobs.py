@@ -1,30 +1,21 @@
 import os
-import sys
+import signal
 import time
 import datetime
 from threading import Thread
 from concurrent.futures import ThreadPoolExecutor
+import asyncio
 import math
 import uuid
 import pytz
 import traceback
-from urllib import request
 import zmq
 import zlib
 import pickle
 
-from engine.cache import Cache
-from TickerParser import TickerParser, Ticker, supported
-
-from pyvirtualdisplay import Display
 from google.cloud import firestore, error_reporting
 
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import ui
-from selenium.webdriver.support import expected_conditions as EC
-
+from DatabaseConnector import DatabaseConnector
 from helpers.utils import Utils
 
 
@@ -32,13 +23,9 @@ database = firestore.Client()
 
 
 class CronJobs(object):
-	oldListings = {}
-	accountProperties = {}
+	accountProperties = DatabaseConnector(mode="account")
 
 	zmqContext = zmq.Context.instance()
-
-	accountsLink= None
-	discordPropertiesUnregisteredUsersLink = None
 
 
 	# -------------------------
@@ -46,75 +33,15 @@ class CronJobs(object):
 	# -------------------------
 	
 	def __init__(self):
+		self.isServiceAvailable = True
+		signal.signal(signal.SIGINT, self.exit_gracefully)
+		signal.signal(signal.SIGTERM, self.exit_gracefully)
+
 		self.logging = error_reporting.Client()
-		self.cache = Cache(ttl=120)
 
-		self.accountsLink = database.collection("accounts").on_snapshot(self.update_account_properties)
-		self.discordPropertiesUnregisteredUsersLink = database.collection("discord/properties/users").order_by("marketAlerts").on_snapshot(self.update_unregistered_users_properties)
-
-
-	# -------------------------
-	# User management
-	# -------------------------
-
-	def update_account_properties(self, settings, changes, timestamp):
-		"""Updates Alpha Account properties
-
-		Parameters
-		----------
-		settings : [google.cloud.firestore_v1.document.DocumentSnapshot]
-			complete document snapshot
-		changes : [google.cloud.firestore_v1.watch.DocumentChange]
-			database changes in the sent snapshot
-		timestamp : int
-			timestamp indicating time of change in the database
-		"""
-
-		try:
-			for change in changes:
-				properties = change.document.to_dict()
-				accountId = change.document.id
-				
-				if change.type.name in ["ADDED", "MODIFIED"]:
-					self.accountProperties[accountId] = properties
-					if "userId" in self.accountProperties[accountId]["oauth"]["discord"]:
-						userId = int(properties["oauth"]["discord"]["userId"])
-						if userId in self.accountProperties:
-							self.accountProperties.pop(userId)
-				else:
-					self.accountProperties.pop(accountId)
-
-		except Exception:
-			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
-
-	def update_unregistered_users_properties(self, settings, changes, timestamp):
-		"""Updates unregistered users properties
-
-		Parameters
-		----------
-		settings : [google.cloud.firestore_v1.document.DocumentSnapshot]
-			complete document snapshot
-		changes : [google.cloud.firestore_v1.watch.DocumentChange]
-			database changes in the sent snapshot
-		timestamp : int
-			timestamp indicating time of change in the database
-		"""
-
-		try:
-			for change in changes:
-				properties = change.document.to_dict()
-				accountId = change.document.id
-
-				if change.type.name in ["ADDED", "MODIFIED"]:
-					if properties.get("connection") is not None: continue
-					self.accountProperties[accountId] = properties
-				else:
-					self.accountProperties.pop(accountId)
-
-		except Exception:
-			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+	def exit_gracefully(self):
+		print("[Startup]: Cron Job handler is exiting")
+		self.isServiceAvailable = False
 
 
 	# -------------------------
@@ -122,7 +49,7 @@ class CronJobs(object):
 	# -------------------------
 
 	def run(self):
-		while True:
+		while self.isServiceAvailable:
 			try:
 				time.sleep(Utils.seconds_until_cycle())
 				t = datetime.datetime.now().astimezone(pytz.utc)
@@ -130,7 +57,7 @@ class CronJobs(object):
 
 				if "1m" in timeframes:
 					self.process_price_alerts()
-					self.update_paper_limit_orders()
+					# self.update_paper_limit_orders()
 
 			except (KeyboardInterrupt, SystemExit): return
 			except Exception:
@@ -144,8 +71,6 @@ class CronJobs(object):
 				t = datetime.datetime.now().astimezone(pytz.utc)
 				timeframes = Utils.get_accepted_timeframes(t)
 
-				if "15m" in timeframes:
-					self.scrape_blogs()
 				if "4H" in timeframes:
 					self.update_popular_tickers()
 
@@ -165,25 +90,22 @@ class CronJobs(object):
 		"""
 
 		try:
-			with ThreadPoolExecutor(max_workers=10) as pool:
-				for accountId in list(self.accountProperties.keys()):
-					marketAlerts = self.accountProperties[accountId].get("marketAlerts", []).copy()
-					if len(marketAlerts) != 0:
-						isRegistered = "customer" in self.accountProperties[accountId]
-						authorId = self.accountProperties[accountId]["oauth"]["discord"].get("userId") if isRegistered else accountId
-						if authorId is None: continue
-						for key in marketAlerts:
-							pool.submit(self.check_price_alert, authorId, accountId, isRegistered, marketAlerts.copy(), key)
-
-					elif "customer" not in self.accountProperties[accountId] and "marketAlerts" in self.accountProperties[accountId]:
-						database.document("discord/properties/users/{}".format(accountId)).update({"marketAlerts": firestore.DELETE_FIELD})
+			with ThreadPoolExecutor(max_workers=20) as pool:
+				accounts = pool.submit(asyncio.run, self.accountProperties.keys()).result()
+				users = database.document("details/marketAlerts").collections()
+				for user in users:
+					accountId = user.id
+					authorId = pool.submit(asyncio.run, self.accountProperties.match(accountId)).result() if accountId in accounts else accountId
+					if authorId is None: continue
+					for alert in user.stream():
+						pool.submit(self.check_price_alert, authorId, accountId, alert.id, alert.to_dict())
 
 		except (KeyboardInterrupt, SystemExit): pass
 		except Exception:
 			print(traceback.format_exc())
 			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
 
-	def check_price_alert(self, authorId, accountId, isRegistered, marketAlerts, key):
+	def check_price_alert(self, authorId, accountId, key, alert):
 		socket = CronJobs.zmqContext.socket(zmq.REQ)
 		socket.connect("tcp://candle-server:6900")
 		socket.setsockopt(zmq.LINGER, 3)
@@ -191,14 +113,8 @@ class CronJobs(object):
 		poller.register(socket, zmq.POLLIN)
 
 		try:
-			if self.cache.has(key):
-				alert = self.cache.get(key)
-			else:
-				alert = database.document("details/marketAlerts/{}/{}".format(accountId, key)).get().to_dict()
-				if alert is None: return
-			self.cache.set(key, alert)
-
 			alertRequest = pickle.loads(zlib.decompress(alert["request"]))
+			alertRequest.timestamp = time.time()
 			ticker = alertRequest.get_ticker()
 			exchange = alertRequest.get_exchange()
 
@@ -209,43 +125,55 @@ class CronJobs(object):
 			else:
 				levelText = "{:,.0f}".format(alert["level"])
 
-			socket.send_multipart([b"cronjob", b"candle", alert["request"]])
-			responses = poller.poll(30 * 1000)
+			if alert["timestamp"] < time.time() - 86400 * 30.5 * 6:
+				if os.environ["PRODUCTION_MODE"]:
+					database.document("discord/properties/messages/{}".format(str(uuid.uuid4()))).set({
+						"title": "Price alert for {} ({}) at {} {} expired.".format(ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote),
+						"subtitle": "Alpha Price Alerts",
+						"description": "Price alerts automatically cancel after 6 months. If you'd like to keep your alert, you'll have to schedule it again.",
+						"color": 6765239,
+						"user": authorId,
+						"channel": alert["channel"]
+					})
 
-			if len(responses) != 0:
-				response = socket.recv()
-				payload, responseText = pickle.loads(zlib.decompress(response))
+					database.document("details/marketAlerts/{}/{}".format(accountId, key)).delete()
 
-				if payload is None:
-					if responseText is not None:
-						print("Alert request error", responseText)
-						if os.environ["PRODUCTION_MODE"]: self.logging.report(responseText)
-					return
+				else:
+					print("{}: price alert for {} ({}) at {} {} expired.".format(accountId, ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote))
 
-				alertRequest.set_current(platform=payload["platform"])
-				for candle in reversed(payload["candles"]):
-					if candle[0] < alert["timestamp"]: break
-					if (candle[3] <= alert["level"] and alert["placement"] == "below") or (alert["level"] <= candle[2] and alert["placement"] == "above"):
-						if os.environ["PRODUCTION_MODE"]:
-							database.document("discord/properties/messages/{}".format(str(uuid.uuid4()))).set({
-								"title": "Price of {} ({}) hit {} {}.".format(ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote),
-								"subtitle": "Alpha Price Alerts",
-								"description": None,
-								"color": 6765239,
-								"user": authorId,
-								"channel": alert["channel"]
-							})
+			else:
+				socket.send_multipart([b"cronjob", b"candle", zlib.compress(pickle.dumps(alertRequest, -1))])
+				responses = poller.poll(30 * 1000)
 
-							marketAlerts.remove(key)
-							database.document("details/marketAlerts/{}/{}".format(accountId, key)).delete()
-							if isRegistered:
-								database.document("accounts/{}".format(accountId)).set({"marketAlerts": marketAlerts}, merge=True)
+				if len(responses) != 0:
+					response = socket.recv()
+					payload, responseText = pickle.loads(zlib.decompress(response))
+
+					if payload is None:
+						if responseText is not None:
+							print("Alert request error", responseText)
+							if os.environ["PRODUCTION_MODE"]: self.logging.report(responseText)
+						return
+
+					alertRequest.set_current(platform=payload["platform"])
+					for candle in reversed(payload["candles"]):
+						if candle[0] < alert["timestamp"]: break
+						if (candle[3] <= alert["level"] and alert["placement"] == "below") or (alert["level"] <= candle[2] and alert["placement"] == "above"):
+							if os.environ["PRODUCTION_MODE"]:
+								database.document("discord/properties/messages/{}".format(str(uuid.uuid4()))).set({
+									"title": "Price of {} ({}) hit {} {}.".format(ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote),
+									"subtitle": "Alpha Price Alerts",
+									"description": None,
+									"color": 6765239,
+									"user": authorId,
+									"channel": alert["channel"]
+								})
+
+								database.document("details/marketAlerts/{}/{}".format(accountId, key)).delete()
+
 							else:
-								database.document("discord/properties/users/{}".format(accountId)).set({"marketAlerts": marketAlerts}, merge=True)
-
-						else:
-							print("{}: Price of {} ({}) hit {} {}.".format(accountId, ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote))
-						break
+								print("{}: price of {} ({}) hit {} {}.".format(accountId, ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote))
+							break
 
 		except (KeyboardInterrupt, SystemExit): pass
 		except Exception:
@@ -379,57 +307,76 @@ class CronJobs(object):
 		if not os.environ["PRODUCTION_MODE"]: return
 		try:
 			processingTimestamp = time.time()
-			platforms = ["TradingLite", "TradingView", "Bookmap", "GoCharting", "Alpha Flow", "CoinGecko", "CCXT", "IEXC", "Quandl", "Alpha Paper Trader", "Alpha Live Trader"]
-			dataset = []
-			tickerMap = {
-				"traditional": [],
-				"crypto": []
+			platforms = ["TradingLite", "TradingView", "Bookmap", "GoCharting", "Alpha Flow", "CoinGecko", "CCXT", "IEXC", "Quandl", "Alpha Paper Trader"]
+			dataset1d = []
+			dataset8d = []
+			topTickerMap = {
+				"traditional": {},
+				"crypto": {}
+			}
+			risingTickerMap = {
+				"traditional": {},
+				"crypto": {}
 			}
 
 			for platform in platforms:
-				requests = database.collection("dataserver/statistics/{}".format(platform)).where("timestamp", ">", processingTimestamp - 86400 * 7).get()
-				isCryptoPlatform = platform in ["TradingLite", "LLD", "CoinGecko", "CCXT", "Alpha Paper Trader", "Alpha Live Trader"]
-				for e in requests:
+				requests1d = database.collection("dataserver/statistics/{}".format(platform)).where("timestamp", ">=", processingTimestamp - 86400 * 1).get()
+				requests8d = database.collection("dataserver/statistics/{}".format(platform)).where("timestamp", "<", processingTimestamp - 86400 * 1).where("timestamp", ">=", processingTimestamp - 86400 * 8).get()
+
+				requests31d = database.collection("dataserver/statistics/{}".format(platform)).where("timestamp", "<", processingTimestamp - 86400 * 31).get()
+				for e in requests31d:
+					database.document("dataserver/statistics/{}/{}".format(platform, e.id)).delete()
+
+				for e in requests1d:
 					request = e.to_dict()
-					if request["base"] in ["BTC.D", "BTC1!", "BLX", "XBT"]: request["base"] = "BTC"
-					if request["base"] in ["ETH.D", "TOTAL2", "TOTAL", "OPTIONS"] or any([e in request["base"] for e in ["LONGS", "SHORTS"]]): continue
-					if request["base"] in ["XAUUSD", "DXY"]: request["market"] = "traditional"
+					if request["ticker"]["base"] in ["BTC", "BTC.D", "BTC1!", "BLX", "XBT", "XBTUSD", "BTCUSD", "BTCUSDT"]:
+						request["ticker"]["base"] = "BTC" if request["ticker"]["bias"] == "crypto" else "BTCUSD"
+					if request["ticker"]["base"] in ["ETH", "ETH.D", "ETHUSD", "ETHUSDT"]:
+						request["ticker"]["base"] = "ETH" if request["ticker"]["bias"] == "crypto" else "ETHUSD"
+					if request["ticker"]["base"] in ["TOTAL2", "TOTAL", "OPTIONS"] or any([e in request["ticker"]["base"] for e in ["LONGS", "SHORTS"]]):
+						continue
+					dataset1d.append(request)
+				for e in requests8d:
+					request = e.to_dict()
+					if request["ticker"]["base"] in ["BTC", "BTC.D", "BTC1!", "BLX", "XBT", "XBTUSD", "BTCUSD", "BTCUSDT"]:
+						request["ticker"]["base"] = "BTC" if request["ticker"]["bias"] == "crypto" else "BTCUSD"
+					if request["ticker"]["base"] in ["ETH", "ETH.D", "ETHUSD", "ETHUSDT"]:
+						request["ticker"]["base"] = "ETH" if request["ticker"]["bias"] == "crypto" else "ETHUSD"
+					if request["ticker"]["base"] in ["TOTAL2", "TOTAL", "OPTIONS"] or any([e in request["ticker"]["base"] for e in ["LONGS", "SHORTS"]]):
+						continue
+					dataset8d.append(request)
 
-					exchange = None if platform not in supported.cryptoExchanges or request["exchange"] not in supported.cryptoExchanges[platform] else TickerParser.find_exchange(request["exchange"], platform)[1]
-					matchingCryptoPair = TickerParser.find_ccxt_crypto_market(Ticker(request["base"].replace("PERP", "")), exchange, platform, {"exchange": None})[0]
-					isInCcxtIndex = (matchingCryptoPair is not None and platform in ["CCXT", "Alpha Paper Trader"] and platform not in ["Alpha Flow"]) or (matchingCryptoPair is not None and len(matchingCryptoPair.base) * 0.8 <= len(request["base"]))
+			for request in dataset1d:
+				topTickerMap[request["ticker"]["bias"]][request["ticker"]["base"]] = topTickerMap[request["ticker"]["bias"]].get(request["ticker"]["base"], 0) + 1
 
-					request["market"] = request.get("market", "crypto" if isCryptoPlatform or isInCcxtIndex else "traditional")
-					if request["market"] == "crypto" and isInCcxtIndex and matchingCryptoPair is not None and matchingCryptoPair.base != request["base"]: request["base"] = matchingCryptoPair.base
-					dataset.append(request)
+			for request in dataset8d:
+				risingTickerMap[request["ticker"]["bias"]][request["ticker"]["base"]] = risingTickerMap[request["ticker"]["bias"]].get(request["ticker"]["base"], 0) + 1
 
-			for i in range(7, 0, -1):
-				tickerMap["traditional"].append({})
-				tickerMap["crypto"].append({})
-				for request in dataset:
-					if processingTimestamp - 86400 * i < request["timestamp"] <= processingTimestamp - 86400 * (i - 1):
-						if request["base"] in tickerMap[request["market"]][-1]: tickerMap[request["market"]][-1][request["base"]] += 1
-						else: tickerMap[request["market"]][-1][request["base"]] = 1
-
-			sortedTickerMap = {
-				"traditional": sorted(tickerMap["traditional"][-1].items(), key=lambda item: item[1]),
-				"crypto": sorted(tickerMap["crypto"][-1].items(), key=lambda item: item[1])
+			sortedTopTickerMap = {
+				"traditional": sorted(topTickerMap["traditional"].items(), key=lambda item: item[1]),
+				"crypto": sorted(topTickerMap["crypto"].items(), key=lambda item: item[1])
+			}
+			sortedRisingTickerMap = {
+				"traditional": sorted([(base, topTickerMap["traditional"].get(base, 0) / (score / 7)) for base, score in risingTickerMap["traditional"].items() if score >= 7], key=lambda item: item[1]),
+				"crypto": sorted([(base, topTickerMap["crypto"].get(base, 0) / (score / 7)) for base, score in risingTickerMap["crypto"].items() if score >= 7], key=lambda item: item[1])
 			}
 
-			maxScoreTraditional = sortedTickerMap["traditional"][-1][1]
-			maxScoreCrypto = sortedTickerMap["crypto"][-1][1]
+			maxScoreTopTraditional = sortedTopTickerMap["traditional"][-1][1]
+			maxScoreTopCrypto = sortedTopTickerMap["crypto"][-1][1]
 
-			topTraditionalTickers = [{"id": k, "rank": v / maxScoreTraditional * 100} for k, v in sortedTickerMap["traditional"][-20:]]
-			topCryptoTickers = [{"id": k, "rank": v / maxScoreCrypto * 100} for k, v in sortedTickerMap["crypto"][-20:]]
+			topTraditionalTickers = [{"id": k, "rank": v / maxScoreTopTraditional * 100} for k, v in sortedTopTickerMap["traditional"][-20:]]
+			topCryptoTickers = [{"id": k, "rank": v / maxScoreTopCrypto * 100} for k, v in sortedTopTickerMap["crypto"][-20:]]
+			risingTraditionalTickers = [{"id": k, "rank": v} for k, v in sortedRisingTickerMap["traditional"][-20:]]
+			risingCryptoTickers = [{"id": k, "rank": v} for k, v in sortedRisingTickerMap["crypto"][-20:]]
 
 			database.document("dataserver/statistics").set({
 				"top": {
 					"traditional": topTraditionalTickers,
 					"crypto": topCryptoTickers
 				},
-				"upandcoming": {
-					"traditional": [],
-					"crypto": []
+				"rising": {
+					"traditional": risingTraditionalTickers,
+					"crypto": risingCryptoTickers
 				}
 			})
 
@@ -438,129 +385,6 @@ class CronJobs(object):
 			print(traceback.format_exc())
 			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
 
-
-	# -------------------------
-	# Data feeds
-	# -------------------------
-
-	def scrape_blogs(self):
-		try:
-			blogPosts = database.document("dataserver/blogs").get().to_dict()
-
-			display = Display(visible=0, size=(1440, 960))
-			display.start()
-
-			options = Options()
-			options.headless = False
-			options.add_argument("--window-size=1440,960")
-			options.add_argument('--use-gl')
-			options.add_argument('--ignore-gpu-blacklist')
-			options.add_argument('--disable-dev-shm-usage')
-			options.add_argument("--hide-scrollbars")
-			options.add_argument('--incognito')
-			options.add_argument("--no-sandbox")
-			chrome = webdriver.Chrome(options=options)
-			wait = ui.WebDriverWait(chrome, 15)
-			
-			# TradingView
-			try:
-				chrome.get("https://www.tradingview.com/blog/en/")
-				wait.until(EC.presence_of_all_elements_located((By.XPATH, "//div[@class='top-container']")))
-				image = chrome.execute_script("return document.querySelector('.articles-grid').querySelectorAll('article')[0].querySelector('img').src")
-				title = chrome.execute_script("return document.querySelector('.articles-grid').querySelectorAll('article')[0].querySelector('.title').innerText")
-				category = chrome.execute_script("return document.querySelector('.articles-grid').querySelectorAll('article')[0].querySelector('.section').innerText").title()
-				url = chrome.execute_script("return document.querySelector('.articles-grid').querySelectorAll('article')[0].querySelector('a').href")
-
-				if blogPosts["TradingView"]["url"] != url:
-					database.document("discord/properties/messages/{}".format(str(uuid.uuid4()))).set({
-						"title": title,
-						"subtitle": "TradingView: {}".format(category),
-						"description": None,
-						"color": 2201331,
-						"user": None,
-						"channel": "738109593376260246",
-						"url": url,
-						"icon": "https://www.tradingview.com/favicon.ico",
-						"image": image
-					})
-
-					blogPosts["TradingView"] = {
-						"category": "TradingView: {}".format(category),
-						"title": title,
-						"image": image,
-						"url": url
-					}
-			except: pass
-
-			# BitMEX
-			try:
-				chrome.get("https://blog.bitmex.com")
-				wait.until(EC.presence_of_all_elements_located((By.XPATH, "//div[@class='wpb_wrapper']")))
-				image = chrome.execute_script("return document.querySelectorAll('.td-block-span12')[0].querySelector('img').src")
-				title = chrome.execute_script("return document.querySelectorAll('.td-block-span12')[0].querySelector('.td-module-title').innerText")
-				description = chrome.execute_script("return document.querySelectorAll('.td-block-span12')[0].querySelector('.td-excerpt').innerText")
-				category = chrome.execute_script("return document.querySelectorAll('.td-block-span12')[0].querySelector('.td-post-category').innerText")
-				url = chrome.execute_script("return document.querySelectorAll('.td-block-span12')[0].querySelector('.td-module-title').querySelector('a').href")
-
-				if blogPosts["BitMEX"]["url"] != url:
-					database.document("discord/properties/messages/{}".format(str(uuid.uuid4()))).set({
-						"title": title,
-						"subtitle": "BitMEX: {}".format(category),
-						"description": description,
-						"color": 16515080,
-						"user": None,
-						"channel": "738427004969287781",
-						"url": url,
-						"icon": "https://www.bitmex.com/favicon.ico",
-						"image": image
-					})
-
-					blogPosts["BitMEX"] = {
-						"category": "BitMEX: {}".format(category),
-						"title": title,
-						"image": image,
-						"url": url
-					}
-			except: pass
-
-			# Binance
-			try:
-				chrome.get("https://www.binance.com/en/blog")
-				wait.until(EC.presence_of_all_elements_located((By.XPATH, "//body")))
-				image = chrome.execute_script("return document.querySelectorAll('.sc-153sum5-0')[0].querySelector('img').src")
-				title = chrome.execute_script("return document.querySelectorAll('.sc-153sum5-0')[0].querySelector('.title').innerText")
-				description = chrome.execute_script("return document.querySelectorAll('.sc-153sum5-0')[0].querySelector('.desc').innerText")
-				url = chrome.execute_script("return document.querySelectorAll('.sc-153sum5-0')[0].querySelector('.read-btn').querySelector('a').href")
-
-				if blogPosts["Binance"]["url"] != url:
-					database.document("discord/properties/messages/{}".format(str(uuid.uuid4()))).set({
-						"title": title,
-						"subtitle": "Binance",
-						"description": description,
-						"color": 16306479,
-						"user": None,
-						"channel": "738427004969287781",
-						"url": url,
-						"icon": "https://firebasestorage.googleapis.com/v0/b/nlc-bot-36685.appspot.com/o/alpha%2Fassets%2Fdiscord%2Fbinance.png?alt=media&token=5dd2b96c-0880-4b71-83f2-1afc88676133",
-						"image": image
-					})
-
-					blogPosts["Binance"] = {
-						"category": "Binance",
-						"title": title,
-						"image": image,
-						"url": url
-				}
-			except: pass
-
-			chrome.quit()
-			display.stop()
-			database.document("dataserver/blogs").set(blogPosts, merge=True)
-
-		except (KeyboardInterrupt, SystemExit): pass
-		except Exception:
-			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
 
 if __name__ == "__main__":
 	os.environ["PRODUCTION_MODE"] = os.environ["PRODUCTION_MODE"] if "PRODUCTION_MODE" in os.environ and os.environ["PRODUCTION_MODE"] else ""

@@ -5,7 +5,7 @@ metadata:
   labels:
     app: satellite
 spec:
-  replicas: 60
+  replicas: 76
   selector:
     matchLabels:
       app: satellite
@@ -34,7 +34,7 @@ spec:
         resources:
           requests:
             memory: "75Mi"
-            cpu: "10m"
+            cpu: "2m"
         ports:
           - containerPort: 6911
       volumes:

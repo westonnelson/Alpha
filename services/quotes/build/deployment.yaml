@@ -5,7 +5,7 @@ metadata:
   labels:
     app: quote-server
 spec:
-  replicas: 1
+  replicas: 6
   selector:
     matchLabels:
       app: quote-server
@@ -31,7 +31,9 @@ spec:
         resources:
           requests:
             memory: "280Mi"
-            cpu: "80m"
+            cpu: "15m"
+          limits:
+            memory: "560Mi"
         ports:
           - containerPort: 6900
       volumes:

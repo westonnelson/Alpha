@@ -1,5 +1,6 @@
 import os
 import sys
+import signal
 import time
 import datetime
 import pytz
@@ -36,10 +37,15 @@ class TickerParserServer(object):
 	coingeckoFiatCurrencies = []
 
 	def __init__(self):
+		self.isServiceAvailable = True
+		signal.signal(signal.SIGINT, self.exit_gracefully)
+		signal.signal(signal.SIGTERM, self.exit_gracefully)
+
 		self.logging = error_reporting.Client()
 
 		TickerParserServer.refresh_parser_index()
-		Thread(target=self.job_queue, daemon=True).start()
+		self.jobQueue = Thread(target=self.job_queue)
+		self.jobQueue.start()
 
 		context = zmq.Context.instance()
 		self.socket = context.socket(zmq.ROUTER)
@@ -47,11 +53,16 @@ class TickerParserServer(object):
 
 		print("[Startup]: Ticker Parser is online")
 
+	def exit_gracefully(self):
+		print("[Startup]: Ticker Parser is exiting")
+		self.socket.close()
+		self.isServiceAvailable = False
+
 	def run(self):
-		while True:
-			origin, delimeter, service, request = self.socket.recv_multipart()
+		while self.isServiceAvailable:
 			try:
-				response = None, None
+				response = None
+				origin, delimeter, service, request = self.socket.recv_multipart()
 				request = pickle.loads(zlib.decompress(request))
 
 				if service == b"find_exchange":
@@ -87,7 +98,8 @@ class TickerParserServer(object):
 				print(traceback.format_exc())
 				if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
 			finally:
-				self.socket.send_multipart([origin, delimeter, zlib.compress(pickle.dumps(response, -1))])
+				try: self.socket.send_multipart([origin, delimeter, zlib.compress(pickle.dumps(response, -1))])
+				except: pass
 
 	def job_queue(self):
 		while True:
@@ -96,7 +108,7 @@ class TickerParserServer(object):
 				t = datetime.datetime.now().astimezone(pytz.utc)
 				timeframes = Utils.get_accepted_timeframes(t)
 
-				if "1D" in timeframes:
+				if "1h" in timeframes:
 					TickerParserServer.refresh_parser_index()
 
 			except Exception:
@@ -177,7 +189,7 @@ class TickerParserServer(object):
 	@staticmethod
 	def refresh_coingecko_index():
 		try:
-			blacklist = ["UNIUSD"]
+			blacklist = ["UNIUSD", "AAPL"]
 			indexReference, i = {}, 0
 			while True:
 				i += 1
@@ -296,7 +308,7 @@ class TickerParserServer(object):
 			tickerOverrides = {
 				"TradingView": [
 					(Ticker("(DJ:DJI)", "DJI", "DJI", "", "DJI", hasParts=False), None, ["DJI"]),
-					(Ticker("SPX500USD", "SPX500USD", "SPX500USD", "", "SPX500USD", hasParts=False), None, ["SPX"])
+					(Ticker("SPX500USD", "SPX500USD", "SPX500USD", "", "SPX500USD", hasParts=False), None, ["SPX", "SP500"])
 				]
 			}
 			cryptoTickerOverrides = {
@@ -306,7 +318,7 @@ class TickerParserServer(object):
 				"TradingView": [
 					(Ticker("BTCUSD", "XBTUSD", "BTC", "USD", "BTC/USD", hasParts=False, mcapRank=1), TickerParserServer.exchanges["bitmex"], ["XBT", "XBTUSD"]),
 					(Ticker("(DJ:DJI)", "DJI", "DJI", "", "DJI", hasParts=False), None, ["DJI"]),
-					(Ticker("SPX500USD", "SPX500USD", "SPX500USD", "", "SPX500USD", hasParts=False), None, ["SPX"]),
+					(Ticker("SPX500USD", "SPX500USD", "SPX500USD", "", "SPX500USD", hasParts=False), None, ["SPX", "SP500"]),
 					(Ticker("(BNC:BLX)", "BLX", "BTC", "USD", "BTC/USD", hasParts=False), None, ["BNC", "BLX"]),
 					(Ticker("BTCUSDLONGS", "BTCUSD Longs", "BTC", "USD", "BTCUSDLONGS", hasParts=False), None, ["L", "LONGS"]),
 					(Ticker("BTCUSDSHORTS", "BTCUSD Shorts", "BTC", "USD", "BTCUSDSHORTS", hasParts=False), None, ["S", "SHORTS"]),

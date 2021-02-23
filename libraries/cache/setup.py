@@ -12,8 +12,8 @@ from shutil import rmtree
 from setuptools import find_packages, setup, Command
 
 # Package meta-data.
-NAME = 'TickerParser'
-DESCRIPTION = 'Library for parsing financial tickers.'
+NAME = 'Cache'
+DESCRIPTION = 'Custom caching library.'
 URL = 'https://www.alphabotsystem.com'
 EMAIL = 'matic@alphabotsystem.com'
 AUTHOR = 'Alpha Bot System OÜ'
@@ -21,9 +21,7 @@ REQUIRES_PYTHON = '>=3.8.0'
 VERSION = '1.0.0'
 
 # What packages are required for this module to be executed?
-REQUIRED = [
-	'ccxt', 'pyzmq'
-]
+REQUIRED = []
 EXTRAS = {}
 
 # The rest you shouldn't have to touch too much :)
@@ -62,7 +60,7 @@ setup(
     author_email=EMAIL,
     python_requires=REQUIRES_PYTHON,
     url=URL,
-    packages=["TickerParser"],
+    packages=["Cache"],
     install_requires=REQUIRED,
     extras_require=EXTRAS,
     include_package_data=True,

@@ -1,3 +1,8 @@
 source /run/secrets/alpha-service/key
 source /run/secrets/alpha-satellites/key
-python -u app/satellite.py
+if [[ $PRODUCTION_MODE == "1" ]]
+then
+	python -u app/satellite.py
+else
+	python -u app/satellite.py
+fi

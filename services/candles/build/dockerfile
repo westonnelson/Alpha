@@ -10,6 +10,7 @@ RUN pip install -r ./requirements.txt
 COPY ./libraries ./libraries
 RUN pip install ./libraries/requests
 RUN pip install ./libraries/parser
+RUN pip install ./libraries/cache
 
 # Copy source code
 COPY ./services/candles/app ./app

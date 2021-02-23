@@ -88,6 +88,9 @@ class MessageRequest(object):
 	# Server properties
 	# -------------------------
 
+	def is_serverwide_pro_used(self):
+		return self.serverwide_ads_disabled() or self.serverwide_price_alerts_available() or self.serverwide_command_presets_available() or self.serverwide_flow_available() or self.serverwide_statistics_available()
+
 	def serverwide_ads_disabled(self):
 		return self.guildProperties["addons"]["noads"]["enabled"]
 

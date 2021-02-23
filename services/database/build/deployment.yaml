@@ -1,49 +1,53 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: cron-jobs
+  name: database
   labels:
-    app: cron-jobs
+    app: database
 spec:
-  replicas: 1
+  replicas: 3
   selector:
     matchLabels:
-      app: cron-jobs
+      app: database
   template:
     metadata:
       labels:
-        app: cron-jobs
+        app: database
     spec:
       containers:
-      - name: cron-jobs
-        image: gcr.io/nlc-bot-36685/alpha-cron-jobs
+      - name: database
+        image: gcr.io/nlc-bot-36685/alpha-database
         imagePullPolicy: Always
         env:
           - name: PRODUCTION_MODE
             value: "1"
         volumeMounts:
-          - name: alpha-service-keys
-            mountPath: /run/secrets/alpha-service
-            readOnly: true
           - name: google-cloud-auth
             mountPath: /run/secrets/google-cloud-auth
             readOnly: true
         resources:
           requests:
-            memory: "330Mi"
-            cpu: "75m"
+            memory: "250Mi"
+            cpu: "100m"
         ports:
-          - containerPort: 6906
+          - containerPort: 6900
       volumes:
-        - name: alpha-service-keys
-          secret:
-            secretName: alpha-service-keys
-            items:
-              - key: credentials
-                path: key
         - name: google-cloud-auth
           secret:
             secretName: google-cloud-auth
             items:
               - key: gcloud_credentials.json
                 path: key
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: database
+spec:
+  type: LoadBalancer
+  selector:
+    app: database
+  ports:
+    - protocol: TCP
+      port: 6900
+      targetPort: 6900

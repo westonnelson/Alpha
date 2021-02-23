@@ -8,33 +8,22 @@ import asyncio
 import traceback
 
 import discord
-from google.cloud import firestore, error_reporting
+from google.cloud import error_reporting
+
+from DatabaseConnector import DatabaseConnector
 
 from helpers.utils import Utils
 
 
-database = firestore.Client()
-
-
 class Alpha(discord.Client):
-	botStatus = []
-
-	accountProperties = {}
-
-	accountsLink = None
-	tradingViewAccessLink = None
-	pendingAccess = {}
-	accessMap = {}
+	accountProperties = DatabaseConnector(mode="account")
 
 	def prepare(self):
 		"""Prepares all required objects and fetches Alpha settings
 
 		"""
 
-		self.botStatus = [False, False]
-
 		self.logging = error_reporting.Client()
-		self.accountsLink = database.collection("accounts").where("oauth.discord.userId", ">", "").on_snapshot(self.update_account_properties)
 
 	async def on_ready(self):
 		"""Initiates all Discord dependent functions and flags the bot as ready to process requests
@@ -47,13 +36,7 @@ class Alpha(discord.Client):
 			discord.utils.get(self.alphaGuild.roles, id=647824289923334155)  # Registered Alpha Account role
 		]
 
-		self.botStatus[0] = True
-		while not self.is_bot_ready():
-			await asyncio.sleep(1)
 		print("[Startup]: Alpha Manager is online")
-
-	def is_bot_ready(self):
-		return all(self.botStatus)
 
 	async def on_member_join(self, member):
 		"""Scanns each member joining into Alpha community guild for spam
@@ -65,59 +48,33 @@ class Alpha(discord.Client):
 		"""
 
 		try:
-			if member.id in self.accountProperties: await self.update_alpha_guild_roles()
+			await self.update_alpha_guild_roles(only=member.id)
 		except asyncio.CancelledError: pass
 		except Exception:
 			print(traceback.format_exc())
 			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
 
-	def update_account_properties(self, settings, changes, timestamp):
-		"""Updates Alpha Account properties
-
-		Parameters
-		----------
-		settings : [google.cloud.firestore_v1.document.DocumentSnapshot]
-			complete document snapshot
-		changes : [google.cloud.firestore_v1.watch.DocumentChange]
-			database changes in the sent snapshot
-		timestamp : int
-			timestamp indicating time of change in the database
-		"""
-
-		try:
-			for change in changes:
-				properties = change.document.to_dict()
-				accountId = change.document.id
-				if change.type.name in ["ADDED", "MODIFIED"]:
-					self.accountProperties[accountId] = properties
-				else:
-					self.accountProperties.pop(accountId, None)
-			self.botStatus[1] = True
-
-		except Exception:
-			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
-
-	async def update_alpha_guild_roles(self):
+	async def update_alpha_guild_roles(self, only=None):
 		"""Updates Alpha community guild roles
 
 		"""
 
 		try:
-			for member in self.alphaGuild.members:
-				isDicscordConnected = False
-				try:
-					for accountId in self.accountProperties.keys():
-						if str(member.id) == self.accountProperties[accountId]["oauth"]["discord"]["userId"]:
-							isDicscordConnected = True
-							break
-				except: pass
+			if not await self.accountProperties.check_status(): return
 
-				if isDicscordConnected:
+			for member in self.alphaGuild.members:
+				if only is not None and only != member.id: continue
+
+				await asyncio.sleep(0.1)
+				accountId = await self.accountProperties.match(member.id)
+
+				if accountId is not None:
+					properties = await self.accountProperties.get(accountId)
+					
 					if self.proRoles[1] not in member.roles:
 						await member.add_roles(self.proRoles[1])
 
-					if self.accountProperties[accountId]["customer"]["personalSubscription"].get("plan", "free") != "free":
+					if properties["customer"]["personalSubscription"].get("plan", "free") != "free":
 						if self.proRoles[0] not in member.roles:
 							await member.add_roles(self.proRoles[0])
 					elif self.proRoles[0] in member.roles:
@@ -143,11 +100,10 @@ class Alpha(discord.Client):
 		while True:
 			try:
 				await asyncio.sleep(Utils.seconds_until_cycle())
-				if not self.is_bot_ready(): continue
 				t = datetime.datetime.now().astimezone(pytz.utc)
 				timeframes = Utils.get_accepted_timeframes(t)
 
-				if "1m" in timeframes:
+				if "5m" in timeframes:
 					await self.update_alpha_guild_roles()
 			except asyncio.CancelledError: return
 			except Exception:

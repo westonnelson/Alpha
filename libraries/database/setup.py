@@ -12,8 +12,8 @@ from shutil import rmtree
 from setuptools import find_packages, setup, Command
 
 # Package meta-data.
-NAME = 'TickerParser'
-DESCRIPTION = 'Library for parsing financial tickers.'
+NAME = 'DatabaseConnector'
+DESCRIPTION = 'Library for communicating with Firestore.'
 URL = 'https://www.alphabotsystem.com'
 EMAIL = 'matic@alphabotsystem.com'
 AUTHOR = 'Alpha Bot System OÜ'
@@ -22,7 +22,7 @@ VERSION = '1.0.0'
 
 # What packages are required for this module to be executed?
 REQUIRED = [
-	'ccxt', 'pyzmq'
+	'pyzmq'
 ]
 EXTRAS = {}
 
@@ -62,7 +62,7 @@ setup(
     author_email=EMAIL,
     python_requires=REQUIRES_PYTHON,
     url=URL,
-    packages=["TickerParser"],
+    packages=["DatabaseConnector"],
     install_requires=REQUIRED,
     extras_require=EXTRAS,
     include_package_data=True,

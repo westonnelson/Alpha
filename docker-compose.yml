@@ -16,6 +16,20 @@ services:
      - source: google-cloud-auth
        target: google-cloud-auth/key
 
+  database:
+    image: alphabotsystem/alpha-database
+    build:
+      context: ./
+      dockerfile: ./services/database/build/dockerfile
+    volumes:
+     - ./services/database:/usr/src/database
+     - ./libraries:/usr/src/database/libraries
+    ports:
+     - "6901:6900"
+    secrets:
+     - source: google-cloud-auth
+       target: google-cloud-auth/key
+
   image-server:
     image: alphabotsystem/alpha-image-server
     build:
@@ -25,7 +39,7 @@ services:
      - ./services/images:/usr/src/image-server
      - ./libraries:/usr/src/image-server/libraries
     ports:
-     - "6901:6900"
+     - "6902:6900"
     secrets:
      - source: alpha-service-keys
        target: alpha-service/key
@@ -43,7 +57,7 @@ services:
      - ./services/quotes:/usr/src/quote-server
      - ./libraries:/usr/src/quote-server/libraries
     ports:
-     - "6902:6900"
+     - "6903:6900"
     secrets:
      - source: alpha-service-keys
        target: alpha-service/key
@@ -61,7 +75,7 @@ services:
      - ./services/details:/usr/src/detail-server
      - ./libraries:/usr/src/detail-server/libraries
     ports:
-     - "6903:6900"
+     - "6904:6900"
     secrets:
      - source: alpha-service-keys
        target: alpha-service/key
@@ -79,7 +93,7 @@ services:
      - ./services/candles:/usr/src/candle-server
      - ./libraries:/usr/src/candle-server/libraries
     ports:
-     - "6904:6900"
+     - "6905:6900"
     secrets:
      - source: alpha-service-keys
        target: alpha-service/key
@@ -97,7 +111,7 @@ services:
      - ./services/trades:/usr/src/trade-server
      - ./libraries:/usr/src/trade-server/libraries
     ports:
-     - "6905:6900"
+     - "6906:6900"
     secrets:
      - source: alpha-service-keys
        target: alpha-service/key
@@ -107,6 +121,7 @@ services:
        target: google-cloud-auth/key
     depends_on:
      - parser
+     - database
 
   cron-jobs:
     image: alphabotsystem/alpha-cron-jobs
@@ -117,7 +132,7 @@ services:
       - ./services/jobs:/usr/src/cron-jobs
       - ./libraries:/usr/src/cron-jobs/libraries
     ports:
-     - "6906:6900"
+     - "6907:6900"
     secrets:
       - source: alpha-service-keys
         target: alpha-service/key
@@ -125,6 +140,7 @@ services:
         target: google-cloud-auth/key
     depends_on:
      - parser
+     - database
      - candle-server
      - trade-server
 
@@ -145,8 +161,10 @@ services:
        target: google-cloud-auth/key
     depends_on:
      - parser
+     - database
      - image-server
      - quote-server
+     - detail-server
      - candle-server
      - trade-server
 
@@ -169,6 +187,7 @@ services:
         target: google-cloud-auth/key
     depends_on:
      - parser
+     - database
      - quote-server
 
   twitter-bot:
@@ -188,8 +207,10 @@ services:
        target: google-cloud-auth/key
     depends_on:
      - parser
+     - database
      - image-server
      - quote-server
+     - detail-server
      - candle-server
      - trade-server
 
@@ -206,6 +227,8 @@ services:
         target: alpha-service/key
       - source: google-cloud-auth
         target: google-cloud-auth/key
+    depends_on:
+     - database
 
 
 secrets:

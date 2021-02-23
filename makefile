@@ -1,5 +1,6 @@
 COMPOSE_DOCKER_CLI_BUILD=1 docker-compose build
 docker tag alphabotsystem/alpha-parser gcr.io/nlc-bot-36685/alpha-parser
+docker tag alphabotsystem/alpha-database gcr.io/nlc-bot-36685/alpha-database
 docker tag alphabotsystem/alpha-candle-server gcr.io/nlc-bot-36685/alpha-candle-server
 docker tag alphabotsystem/alpha-image-server gcr.io/nlc-bot-36685/alpha-image-server
 docker tag alphabotsystem/alpha-quote-server gcr.io/nlc-bot-36685/alpha-quote-server

@@ -131,7 +131,7 @@ class HeatmapRequestHandler(object):
 					if style == "":
 						request.timeframes = [request.find_parameter_with_id(1440, type="timeframes")]
 					else:
-						request.timeframes = [""]
+						request.timeframes = [Parameter(None, None, None, finviz="")]
 				elif len(request.timeframes) != 0 and style != "":
 					request.set_error("Timeframe cannot be used with selected heat map style.")
 				if type == "t=etf" and style not in ["&st=ytd", "&st=relvol"]:

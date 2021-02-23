@@ -1,6 +1,5 @@
 import time
 import datetime
-import pytz
 import math
 import colorsys
 
@@ -49,16 +48,15 @@ class Utils(object):
 		elif raw in ["c gindex", "c gi", "c findex", "c fi", "c fgindex", "c fgi", "c gfindex", "c gfi"]: raw = "c am fgi"
 		elif raw in ["c nvtr", "c nvt", "c nvt ratio", "c nvtratio"]: raw = "c wc nvt"
 		elif raw in ["c drbns", "c drbn", "c rbns", "c rbn", "c dribbon", "c difficultyribbon"]: raw = "c wc drbn"
-		elif raw in ["p fut", "p futs", "p futures"]: raw = "p xbtz20, xbth21"
+		elif raw in ["p fut", "p futs", "p futures"]: raw = "p xbth21, xbtm21"
 
 		raw = raw.replace("line break", "break")
 
 		return raw
 
 	@staticmethod
-	def seconds_until_cycle(every=15, offset=0):
-		n = datetime.datetime.now().astimezone(pytz.utc)
-		return (every - (n.second + offset) % every) - ((time.time() * 1000) % 1000) / 1000
+	def seconds_until_cycle():
+		return (time.time() + 60) // 60 * 60 - time.time()
 
 	@staticmethod
 	def get_accepted_timeframes(t):

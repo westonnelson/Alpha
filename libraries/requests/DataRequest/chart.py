@@ -375,7 +375,9 @@ class ChartRequest(object):
 			Parameter(1, "1m", ["1", "1m", "1min", "1mins", "1minute", "1minutes", "min", "m"], tradinglite="1", tradingview="1", gocharting="1m"),
 			Parameter(2, "2m", ["2", "2m", "2min", "2mins", "2minute", "2minutes"]),
 			Parameter(3, "3m", ["3", "3m", "3min", "3mins", "3minute", "3minutes"], tradinglite="3", tradingview="3", gocharting="3m"),
+			Parameter(4, "4m", ["4", "4m", "4min", "4mins", "4minute", "4minutes"]),
 			Parameter(5, "5m", ["5", "5m", "5min", "5mins", "5minute", "5minutes"], tradinglite="5", tradingview="5", gocharting="5m"),
+			Parameter(6, "6m", ["6", "6m", "6min", "6mins", "6minute", "6minutes"]),
 			Parameter(10, "10m", ["10", "10m", "10min", "10mins", "10minute", "10minutes"], bookmap="bm-btn-time-frame-10m"),
 			Parameter(15, "15m", ["15", "15m", "15min", "15mins", "15minute", "15minutes"], tradinglite="15", tradingview="15", gocharting="15m"),
 			Parameter(20, "20m", ["20", "20m", "20min", "20mins", "20minute", "20minutes"]),
@@ -391,8 +393,12 @@ class ChartRequest(object):
 			Parameter(1440, "1D", ["24", "24h", "24hr", "24hrs", "24hour", "24hours", "d", "day", "1", "1d", "1day", "daily", "1440", "1440m", "1440min", "1440mins", "1440minute", "1440minutes"], tradinglite="1440", tradingview="D", bookmap="bm-btn-time-frame-1d", gocharting="1D", finviz="d", alphaflow="yesterday"),
 			Parameter(2880, "2D", ["48", "48h", "48hr", "48hrs", "48hour", "48hours", "2", "2d", "2day", "2880", "2880m", "2880min", "2880mins", "2880minute", "2880minutes"]),
 			Parameter(3420, "3D", ["72", "72h", "72hr", "72hrs", "72hour", "72hours", "3", "3d", "3day", "3420", "3420m", "3420min", "3420mins", "3420minute", "3420minutes"]),
+			Parameter(5760, "4D", ["96", "96h", "96hr", "96hrs", "96hour", "96hours", "4", "4d", "4day", "5760", "5760m", "5760min", "5760mins", "5760minute", "5760minutes"]),
+			Parameter(7200, "5D", ["120", "120h", "120hr", "120hrs", "120hour", "120hours", "5", "5d", "5day", "7200", "7200m", "7200min", "7200mins", "7200minute", "7200minutes"]),
+			Parameter(8640, "6D", ["144", "144h", "144hr", "144hrs", "144hour", "144hours", "4", "4d", "4day", "8640", "8640m", "8640min", "8640mins", "8640minute", "8640minutes"]),
 			Parameter(10080, "1W", ["7", "7d", "7day", "7days", "w", "week", "1w", "1week", "weekly"], tradingview="W", bookmap="bm-btn-time-frame-1W", gocharting="1W", finviz="w", alphaflow="lastweek"),
 			Parameter(20160, "2W", ["14", "14d", "14day", "14days", "2w", "2week"]),
+			Parameter(30240, "3W", ["21", "21d", "21day", "21days", "3w", "3week"]),
 			Parameter(43829, "1M", ["30d", "30day", "30days", "1", "1m", "m", "mo", "month", "1mo", "1month", "monthly"], tradingview="M", bookmap="bm-btn-time-frame-1Mo", gocharting="1M", finviz="m"),
 			Parameter(87658, "2M", ["2", "2m", "2m", "2mo", "2month", "2months"]),
 			Parameter(131487, "3M", ["3", "3m", "3m", "3mo", "3month", "3months"]),
@@ -401,7 +407,8 @@ class ChartRequest(object):
 			Parameter(525949, "1Y", ["12", "12m", "12mo", "12month", "12months", "year", "yearly", "1year", "1y", "y", "annual", "annually"]),
 			Parameter(1051898, "2Y", ["24", "24m", "24mo", "24month", "24months", "2year", "2y"]),
 			Parameter(1577847, "3Y", ["36", "36m", "36mo", "36month", "36months", "3year", "3y"]),
-			Parameter(2103796, "4Y", ["48", "48m", "48mo", "48month", "48months", "4year", "4y"])
+			Parameter(2103796, "4Y", ["48", "48m", "48mo", "48month", "48months", "4year", "4y"]),
+			Parameter(2628000, "5Y", ["60", "60m", "60mo", "60month", "60months", "5year", "5y"])
 		],
 		"indicators": [
 			Parameter("ab", "Abandoned Baby", ["ab", "abandonedbaby"], gocharting="ABANDONEDBABY"),

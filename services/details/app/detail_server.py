@@ -1,18 +1,18 @@
 import os
-import sys
+import signal
 import time
+import uuid
 import zmq
 import zlib
 import pickle
 import traceback
 import datetime
-import pytz
 from threading import Thread
 
 from pycoingecko import CoinGeckoAPI
 from google.cloud import firestore, error_reporting
 
-from engine.cache import Cache
+from Cache import Cache
 from TickerParser import TickerParser
 
 
@@ -23,6 +23,10 @@ class DetailProcessor(object):
 	coinGecko = CoinGeckoAPI()
 
 	def __init__(self):
+		self.isServiceAvailable = True
+		signal.signal(signal.SIGINT, self.exit_gracefully)
+		signal.signal(signal.SIGTERM, self.exit_gracefully)
+
 		self.logging = error_reporting.Client()
 		self.cache = Cache()
 
@@ -32,11 +36,16 @@ class DetailProcessor(object):
 
 		print("[Startup]: Detail Server is online")
 
+	def exit_gracefully(self):
+		print("[Startup]: Detail Server is exiting")
+		self.socket.close()
+		self.isServiceAvailable = False
+
 	def run(self):
-		while True:
-			origin, delimeter, clientId, service, request = self.socket.recv_multipart()
+		while self.isServiceAvailable:
 			try:
 				response = None, None
+				origin, delimeter, clientId, service, request = self.socket.recv_multipart()
 				request = pickle.loads(zlib.decompress(request))
 				if request.timestamp + 30 < time.time(): continue
 
@@ -48,7 +57,8 @@ class DetailProcessor(object):
 				print(traceback.format_exc())
 				if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
 			finally:
-				self.socket.send_multipart([origin, delimeter, zlib.compress(pickle.dumps(response, -1))])
+				try: self.socket.send_multipart([origin, delimeter, zlib.compress(pickle.dumps(response, -1))])
+				except: pass
 
 	def request_detail(self, request):
 		payload, tradeMessage, updatedTradeMessage = None, None, None
@@ -58,10 +68,26 @@ class DetailProcessor(object):
 			hashCode = hash(request.requests[platform])
 			fromCache = False
 
-			if platform == "CoinGecko":
+			if request.can_cache() and self.cache.has(hashCode):
+				payload, updatedQuoteMessage = self.cache.get(hashCode), None
+				fromCache = True
+			elif platform == "CoinGecko":
 				payload, updatedQuoteMessage = self.request_coingecko_details(request)
 
 			if payload is not None:
+				if request.can_cache() and not fromCache: self.cache.set(hashCode, payload)
+				if request.authorId != 401328409499664394 and request.requests[platform].ticker.base is not None:
+					database.document("dataserver/statistics/{}/{}".format(platform, str(uuid.uuid4()))).set({
+						"timestamp": time.time(),
+						"authorId": str(request.authorId),
+						"ticker": {
+							"base": request.requests[platform].ticker.base,
+							"quote": request.requests[platform].ticker.quote,
+							"id": request.requests[platform].ticker.id,
+							"bias": request.parserBias
+						},
+						"exchange": None if request.requests[platform].exchange is None else request.requests[platform].exchange.id
+					})
 				return payload, updatedTradeMessage
 			elif updatedTradeMessage is not None:
 				tradeMessage = updatedTradeMessage
@@ -94,14 +120,14 @@ class DetailProcessor(object):
 					"public interest": rawData["public_interest_score"]
 				},
 				"price": {
-					"current": rawData["market_data"]["current_price"]["usd"],
-					"ath": rawData["market_data"]["ath"]["usd"],
-					"atl": rawData["market_data"]["atl"]["usd"]
+					"current": rawData["market_data"]["current_price"].get("usd"),
+					"ath": rawData["market_data"]["ath"].get("usd"),
+					"atl": rawData["market_data"]["atl"].get("usd")
 				},
 				"change": {
-					"past day": rawData["market_data"]["price_change_percentage_24h_in_currency"].get("usd", None),
-					"past month": rawData["market_data"]["price_change_percentage_30d_in_currency"].get("usd", None),
-					"past year": rawData["market_data"]["price_change_percentage_1y_in_currency"].get("usd", None)
+					"past day": rawData["market_data"]["price_change_percentage_24h_in_currency"].get("usd"),
+					"past month": rawData["market_data"]["price_change_percentage_30d_in_currency"].get("usd"),
+					"past year": rawData["market_data"]["price_change_percentage_1y_in_currency"].get("usd")
 				},
 				"sourceText": "from CoinGecko",
 				"platform": "CoinGecko",

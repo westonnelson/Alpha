@@ -1,2 +1,7 @@
 source /run/secrets/alpha-service/key
-python -u app/discord_bot.py
+if [[ $PRODUCTION_MODE == "1" ]]
+then
+	python -u app/discord_bot.py
+else
+	python -u app/discord_bot.py
+fi

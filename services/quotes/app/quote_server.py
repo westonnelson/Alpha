@@ -1,8 +1,7 @@
 import os
-import sys
+import signal
 import time
 import uuid
-from threading import Thread
 import zmq
 import zlib
 import pickle
@@ -24,7 +23,7 @@ from matplotlib import ticker as tkr
 import matplotlib.transforms as mtransforms
 from google.cloud import firestore, error_reporting
 
-from engine.cache import Cache
+from Cache import Cache
 from TickerParser import TickerParser, Ticker, Exchange, supported
 
 from assets import static_storage
@@ -51,11 +50,14 @@ class QuoteProcessor(object):
 	lastBitcoinQuote = {}
 
 	def __init__(self):
+		self.isServiceAvailable = True
+		signal.signal(signal.SIGINT, self.exit_gracefully)
+		signal.signal(signal.SIGTERM, self.exit_gracefully)
+
 		self.logging = error_reporting.Client()
 		self.cache = Cache(ttl=5)
 
 		self.coinGecko = CoinGeckoAPI()
-
 		self.lastBitcoinQuote = {
 			"quotePrice": [0],
 			"quoteVolume": None,
@@ -76,11 +78,16 @@ class QuoteProcessor(object):
 
 		print("[Startup]: Quote Server is online")
 
+	def exit_gracefully(self):
+		print("[Startup]: Quote Server is exiting")
+		self.socket.close()
+		self.isServiceAvailable = False
+
 	def run(self):
-		while True:
-			origin, delimeter, clientId, service, request = self.socket.recv_multipart()
+		while self.isServiceAvailable:
 			try:
 				response = None, None
+				origin, delimeter, clientId, service, request = self.socket.recv_multipart()
 				request = pickle.loads(zlib.decompress(request))
 				if request.timestamp + 30 < time.time(): continue
 
@@ -94,7 +101,8 @@ class QuoteProcessor(object):
 				print(traceback.format_exc())
 				if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
 			finally:
-				self.socket.send_multipart([origin, delimeter, zlib.compress(pickle.dumps(response, -1))])
+				try: self.socket.send_multipart([origin, delimeter, zlib.compress(pickle.dumps(response, -1))])
+				except: pass
 
 	def request_quote(self, request):
 		payload, quoteMessage, updatedQuoteMessage = None, None, None
@@ -126,8 +134,12 @@ class QuoteProcessor(object):
 					database.document("dataserver/statistics/{}/{}".format(platform, str(uuid.uuid4()))).set({
 						"timestamp": time.time(),
 						"authorId": str(request.authorId),
-						"base": request.requests[platform].ticker.base,
-						"quote": request.requests[platform].ticker.quote,
+						"ticker": {
+							"base": request.requests[platform].ticker.base,
+							"quote": request.requests[platform].ticker.quote,
+							"id": request.requests[platform].ticker.id,
+							"bias": request.parserBias
+						},
 						"exchange": None if request.requests[platform].exchange is None else request.requests[platform].exchange.id
 					})
 				return payload, updatedQuoteMessage
@@ -244,7 +256,10 @@ class QuoteProcessor(object):
 					try: rawData = exchange.properties.public_get_instrument({"symbol": ticker.id})[0]
 					except: return None, "Requested funding data for `{}` is not available.".format(ticker.name)
 
-					fundingDate = datetime.datetime.strptime(rawData["fundingTimestamp"], "%Y-%m-%dT%H:%M:00.000Z").replace(tzinfo=pytz.utc)
+					if rawData["fundingTimestamp"] is None:
+						fundingDate = datetime.datetime.strptime(rawData["fundingTimestamp"], "%Y-%m-%dT%H:%M:00.000Z").replace(tzinfo=pytz.utc)
+					else:
+						fundingDate = datetime.datetime.now().replace(tzinfo=pytz.utc)
 					indicativeFundingTimestamp = datetime.datetime.timestamp(fundingDate) + 28800
 					indicativeFundingDate = datetime.datetime.utcfromtimestamp(indicativeFundingTimestamp).replace(tzinfo=pytz.utc)
 					deltaFunding = fundingDate - datetime.datetime.now().astimezone(pytz.utc)

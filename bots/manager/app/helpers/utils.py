@@ -1,13 +1,11 @@
 import time
 import datetime
-import pytz
 
 
 class Utils(object):
 	@staticmethod
-	def seconds_until_cycle(every=15, offset=0):
-		n = datetime.datetime.now().astimezone(pytz.utc)
-		return (every - (n.second + offset) % every) - ((time.time() * 1000) % 1000) / 1000
+	def seconds_until_cycle():
+		return (time.time() + 60) // 60 * 60 - time.time()
 
 	@staticmethod
 	def get_accepted_timeframes(t):
