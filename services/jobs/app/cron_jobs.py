@@ -98,14 +98,14 @@ class CronJobs(object):
 					authorId = pool.submit(asyncio.run, self.accountProperties.match(accountId)).result() if accountId in accounts else accountId
 					if authorId is None: continue
 					for alert in user.stream():
-						pool.submit(self.check_price_alert, authorId, accountId, alert.id, alert.to_dict())
+						pool.submit(self.check_price_alert, authorId, accountId, alert.reference, alert.to_dict())
 
 		except (KeyboardInterrupt, SystemExit): pass
 		except Exception:
 			print(traceback.format_exc())
 			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
 
-	def check_price_alert(self, authorId, accountId, key, alert):
+	def check_price_alert(self, authorId, accountId, reference, alert):
 		socket = CronJobs.zmqContext.socket(zmq.REQ)
 		socket.connect("tcp://candle-server:6900")
 		socket.setsockopt(zmq.LINGER, 3)
@@ -136,7 +136,7 @@ class CronJobs(object):
 						"channel": alert["channel"]
 					})
 
-					database.document("details/marketAlerts/{}/{}".format(accountId, key)).delete()
+					reference.delete()
 
 				else:
 					print("{}: price alert for {} ({}) at {} {} expired.".format(accountId, ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote))
@@ -169,7 +169,7 @@ class CronJobs(object):
 									"channel": alert["channel"]
 								})
 
-								database.document("details/marketAlerts/{}/{}".format(accountId, key)).delete()
+								reference.delete()
 
 							else:
 								print("{}: price of {} ({}) hit {} {}.".format(accountId, ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote))

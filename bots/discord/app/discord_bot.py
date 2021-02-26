@@ -98,21 +98,13 @@ class Alpha(discord.AutoShardedClient):
 
 		t = datetime.datetime.now().astimezone(pytz.utc)
 
-		await self.update_system_status(t)
-		if os.environ["PRODUCTION_MODE"]:
-			statusChannel = client.get_channel(560884869899485233)
-			onlineMessage = await statusChannel.fetch_message(640502830062632960)
-			if onlineMessage is not None:
-				await onlineMessage.edit(embed=discord.Embed(title=":hourglass_flowing_sand: Alpha Bot: rebooting for updates", color=constants.colors["gray"]), suppress=False)
-		print("[Startup]: system status update complete")
-
 		while not await self.accountProperties.check_status() or not await self.guildProperties.check_status():
 			await asyncio.sleep(15)
 		self.botStatus[0] = True
 		await client.change_presence(status=discord.Status.online, activity=discord.Activity(type=discord.ActivityType.watching, name="alphabotsystem.com"))
 
-		if os.environ["PRODUCTION_MODE"]:
-			await self.update_static_messages()
+		await self.update_system_status(t)
+		await self.update_static_messages()
 		print("[Startup]: Alpha Bot startup complete")
 
 	def is_bot_ready(self):
@@ -123,6 +115,7 @@ class Alpha(discord.AutoShardedClient):
 
 		"""
 
+		if not os.environ["PRODUCTION_MODE"]: return
 		try:
 			# Alpha Pro messages
 			proChannel = client.get_channel(669917049895518208)
@@ -602,6 +595,7 @@ class Alpha(discord.AutoShardedClient):
 			_authorId = message.author.id if message.webhook_id is None else message.webhook_id
 			_accountId = None
 			_guildId = message.guild.id if message.guild is not None else -1
+			_channelId = message.channel.id if message.channel is not None else -1
 			if _authorId == 361916376069439490:
 				if " --user " in _messageContent:
 					_messageContent, _authorId = _messageContent.split(" --user ")[0], int(_messageContent.split(" --user ")[1])
@@ -625,6 +619,7 @@ class Alpha(discord.AutoShardedClient):
 				content=_messageContent,
 				accountId=_accountId,
 				authorId=_authorId,
+				channelId=_channelId,
 				guildId=_guildId,
 				accountProperties=_accountProperties,
 				guildProperties=_guildProperties
@@ -758,6 +753,14 @@ class Alpha(discord.AutoShardedClient):
 						await message.delete()
 						settings = copy.deepcopy(messageRequest.guildProperties)
 						await message.author.send(content="```json\n{}\n```".format(json.dumps(settings, indent=3, sort_keys=True)))
+					elif command == "reboot":
+						if os.environ["PRODUCTION_MODE"]:
+							statusChannel = client.get_channel(560884869899485233)
+							onlineMessage = await statusChannel.fetch_message(640502830062632960)
+							if onlineMessage is not None:
+								await onlineMessage.edit(embed=discord.Embed(title=":hourglass_flowing_sand: Alpha Bot: rebooting for updates", color=constants.colors["gray"]), suppress=False)
+						else:
+							print("[Status]: reboot message")
 					elif command.startswith("del"):
 						if message.guild.me.guild_permissions.manage_messages:
 							parameters = messageRequest.content.split("del ", 1)
@@ -1380,9 +1383,9 @@ class Alpha(discord.AutoShardedClient):
 	async def add_tip_message(self, message, messageRequest, command=None):
 		if messageRequest.is_pro() and len(messageRequest.accountProperties["customer"]["addons"].keys()) == 0 and not messageRequest.is_serverwide_pro_used():
 			await message.channel.send(embed=discord.Embed(title="Activate and start using Alpha Pro features!", description="Thanks for signing up for [Alpha Pro](https://www.alphabotsystem.com/pro). To enable any of the pro features on your personal account or for your community, go into your [personal Discord preferences](https://www.alphabotsystem.com/account/discord) or your [Community Dashboard](https://www.alphabotsystem.com/communities) respectively, and enable any of the pro features in the Pro Tools section.", color=constants.colors["light blue"]))
-		elif not messageRequest.ads_disabled() and random.randint(0, constants.frequency[messageRequest.guildProperties["settings"]["messageProcessing"]["bias"]]) == 1:
+		elif not messageRequest.ads_disabled() and random.randint(0, constants.frequency[messageRequest.marketBias]) == 1:
 			c = command
-			while c == command: c, textSet = random.choice(list(constants.supportMessages[messageRequest.guildProperties["settings"]["messageProcessing"]["bias"]].items()))
+			while c == command: c, textSet = random.choice(list(constants.supportMessages[messageRequest.marketBias].items()))
 			selectedTip = random.choice(textSet)
 			await message.channel.send(embed=discord.Embed(title=selectedTip[0], description=selectedTip[1], color=constants.colors["light blue"]))
 
@@ -1752,18 +1755,17 @@ class Alpha(discord.AutoShardedClient):
 
 							newAlert["placement"] = "above" if newAlert["level"] > payload["candles"][0][4] else "below"
 
-							async with message.channel.typing():
-								if not messageRequest.is_registered():
-									database.document("details/marketAlerts/{}/{}".format(messageRequest.authorId, alertId)).set(newAlert)
-								elif messageRequest.serverwide_command_presets_available():
-									database.document("details/marketAlerts/{}/{}".format(messageRequest.accountId, alertId)).set(newAlert)
-								elif messageRequest.personal_command_presets_available():
-									database.document("details/marketAlerts/{}/{}".format(messageRequest.accountId, alertId)).set(newAlert)
-									database.document("accounts/{}".format(messageRequest.accountId)).set({"customer": {"addons": {"marketAlerts": 1}}}, merge=True)
-
 							embed = discord.Embed(title="Price alert set for {} ({}) at {} {}.".format(ticker.base, request.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote), color=constants.colors["deep purple"])
 							embed.set_author(name="Alert successfully set", icon_url=static_storage.icon)
 							sentMessages.append(await message.channel.send(embed=embed))
+
+							if not messageRequest.is_registered():
+								database.document("details/marketAlerts/{}/{}".format(messageRequest.authorId, alertId)).set(newAlert)
+							elif messageRequest.serverwide_price_alerts_available():
+								database.document("details/marketAlerts/{}/{}".format(messageRequest.accountId, alertId)).set(newAlert)
+							elif messageRequest.personal_price_alerts_available():
+								database.document("details/marketAlerts/{}/{}".format(messageRequest.accountId, alertId)).set(newAlert)
+								database.document("accounts/{}".format(messageRequest.accountId)).set({"customer": {"addons": {"marketAlerts": 1}}}, merge=True)
 
 					elif messageRequest.is_pro():
 						if not message.author.bot and message.author.permissions_in(message.channel).administrator:
@@ -2071,7 +2073,7 @@ class Alpha(discord.AutoShardedClient):
 					response = []
 					async with message.channel.typing():
 						rawData = database.document("dataserver/statistics").get().to_dict()
-						response = rawData["top"][messageRequest.guildProperties["settings"]["messageProcessing"]["bias"]][:9:-1]
+						response = rawData["top"][messageRequest.marketBias][:9:-1]
 
 					embed = discord.Embed(title="Top Alpha Bot requests", color=constants.colors["deep purple"])
 					for token in response:

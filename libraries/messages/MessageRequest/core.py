@@ -1,19 +1,25 @@
 class MessageRequest(object):
-	def __init__(self, raw=None, content=None, accountId=None, authorId=None, guildId=None, presetUsed=False, accountProperties={}, guildProperties={}):
+	def __init__(self, raw=None, content=None, accountId=None, authorId=None, channelId=None, guildId=None, presetUsed=False, accountProperties={}, guildProperties={}):
 		self.raw = raw
 		self.content = content
 
 		self.accountId = accountId
 		self.authorId = authorId
+		self.channelId = channelId
 		self.guildId = guildId
 
 		self.accountProperties = accountProperties
 		self.guildProperties = MessageRequest.create_guild_settings(guildProperties)
+		self.overrides = self.guildProperties.get("overrides", {})
 
 		self.presetUsed = False
 
-		self.autodelete = guildProperties["settings"]["messageProcessing"]["autodelete"]
+		self.autodelete = self.guildProperties["settings"]["messageProcessing"]["autodelete"]
+		self.marketBias = self.guildProperties["settings"]["messageProcessing"]["bias"]
 
+		if str(channelId) in self.overrides:
+			self.autodelete = self.overrides[str(channelId)].get("messageProcessing", {}).get("autodelete", self.autodelete)
+			self.marketBias = self.overrides[str(channelId)].get("messageProcessing", {}).get("bias", self.marketBias)
 	
 	# -------------------------
 	# Properties
@@ -32,22 +38,22 @@ class MessageRequest(object):
 
 	def get_platform_order_for(self, commandType):
 		if commandType == "charts":
-			if self.guildProperties["settings"]["messageProcessing"]["bias"] == "traditional":
+			if self.marketBias == "traditional":
 				return [] + (self.accountProperties["settings"]["charts"]["preferredOrder"] if "settings" in self.accountProperties else ["TradingView", "Finviz", "Alternative.me", "Woobull Charts", "TradingLite", "GoCharting", "Bookmap"])
 			else:
 				return ["Alternative.me", "Woobull Charts"] + (self.accountProperties["settings"]["charts"]["preferredOrder"] if "settings" in self.accountProperties else ["TradingLite", "TradingView", "GoCharting", "Finviz", "Bookmap"])
 		elif commandType == "heatmaps":
-			if self.guildProperties["settings"]["messageProcessing"]["bias"] == "traditional":
+			if self.marketBias == "traditional":
 				return ["Finviz", "Bitgur"]
 			else:
 				return ["Bitgur", "Finviz"]
 		elif commandType == "quotes":
-			if self.guildProperties["settings"]["messageProcessing"]["bias"] == "traditional":
+			if self.marketBias == "traditional":
 				return ["IEXC", "Quandl", "Alternative.me", "LLD", "CoinGecko", "CCXT"]
 			else:
 				return ["Alternative.me", "LLD", "CoinGecko", "CCXT", "IEXC", "Quandl"]
 		elif commandType == "details":
-			if self.guildProperties["settings"]["messageProcessing"]["bias"] == "traditional":
+			if self.marketBias == "traditional":
 				return ["IEXC", "CoinGecko"]
 			else:
 				return ["CoinGecko", "IEXC"]

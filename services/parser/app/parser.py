@@ -228,9 +228,17 @@ class TickerParserServer(object):
 				TickerParserServer.exchanges[stock["exchange"]].properties.symbols.append(stock["symbol"])
 			
 			forexSymbols = requests.get("https://cloud.iexapis.com/stable/ref-data/fx/symbols?token={}".format(os.environ["IEXC_KEY"])).json()
+			derivedCurrencies = set()
 			for pair in forexSymbols["pairs"]:
+				derivedCurrencies.add(pair["fromCurrency"])
+				derivedCurrencies.add(pair["toCurrency"])
 				TickerParserServer.iexcForexIndex[pair["symbol"]] = {"id": pair["symbol"], "name": pair["symbol"], "base": pair["fromCurrency"], "quote": pair["toCurrency"], "reversed": False}
 				TickerParserServer.iexcForexIndex[pair["toCurrency"] + pair["fromCurrency"]] = {"id": pair["symbol"], "name": pair["toCurrency"] + pair["fromCurrency"], "base": pair["toCurrency"], "quote": pair["fromCurrency"], "reversed": True}
+			for fromCurrency in derivedCurrencies:
+				for toCurrency in derivedCurrencies:
+					symbol = fromCurrency + toCurrency
+					if fromCurrency != toCurrency and symbol not in TickerParserServer.iexcForexIndex:
+						TickerParserServer.iexcForexIndex[symbol] = {"id": symbol, "name": symbol, "base": fromCurrency, "quote": toCurrency, "reversed": False}
 
 			otcSymbols = requests.get("https://cloud.iexapis.com/stable/ref-data/otc/symbols?token={}".format(os.environ["IEXC_KEY"])).json()
 			for stock in otcSymbols:

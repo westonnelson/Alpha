@@ -130,7 +130,7 @@ class QuoteProcessor(object):
 
 			if payload is not None:
 				if request.can_cache() and not fromCache: self.cache.set(hashCode, payload)
-				if request.authorId != 401328409499664394 and request.requests[platform].ticker.base is not None and request.authorId not in constants.satellites.keys():
+				if request.authorId != 401328409499664394 and request.requests[platform].ticker.base is not None and request.authorId not in constants.satellites:
 					database.document("dataserver/statistics/{}/{}".format(platform, str(uuid.uuid4()))).set({
 						"timestamp": time.time(),
 						"authorId": str(request.authorId),

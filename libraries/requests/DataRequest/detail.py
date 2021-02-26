@@ -15,7 +15,7 @@ class DetailRequestHandler(object):
 		self.hash = "P{}{}".format(int(time.time() * 1000), authorId)
 		self.platforms = platforms
 		self.defaults = {"exchange": None} if messageRequest is None else messageRequest.guildProperties["settings"]["charts"]["defaults"]
-		self.parserBias = "traditional" if messageRequest is None else messageRequest.guildProperties["settings"]["messageProcessing"]["bias"]
+		self.parserBias = "traditional" if messageRequest is None else messageRequest.marketBias
 		
 		self.isDelayed = not isPro
 		self.isMarketAlert = kwargs.get("isMarketAlert", False)
