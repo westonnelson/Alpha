@@ -34,7 +34,7 @@ class DatabaseConnector(object):
 		try: return await DatabaseConnector.execute_parser_request(bytes(self.mode + "_status", encoding='utf8'), b"")
 		except: return False
 
-	async def keys(self, default=[]):
+	async def keys(self, default={}):
 		try: response = await DatabaseConnector.execute_parser_request(bytes(self.mode + "_keys", encoding='utf8'), b"")
 		except: return default
 

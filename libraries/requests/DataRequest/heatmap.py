@@ -21,7 +21,7 @@ class HeatmapRequestHandler(object):
 
 		self.requests = {}
 		for platform in self.platforms:
-			self.requests[platform] = HeatmapRequest(platform)
+			self.requests[platform] = HeatmapRequest(platform, self.parserBias)
 
 	def parse_argument(self, argument):
 		for platform, request in self.requests.items():
@@ -325,7 +325,9 @@ class HeatmapRequest(object):
 		]
 	}
 
-	def __init__(self, platform):
+	def __init__(self, platform, bias):
+		self.parserBias = bias
+
 		self.timeframes = []
 		self.heatmapStyle = []
 		self.imageStyle = []

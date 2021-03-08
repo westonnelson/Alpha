@@ -35,7 +35,7 @@ database = firestore.Client()
 
 plt.switch_backend("Agg")
 plt.ion()
-plt.rcParams["font.family"] = "Trebuchet MS"
+plt.rcParams["font.family"] = "DejaVu Sans"
 plt.rcParams['figure.figsize'] = (8, 6)
 plt.rcParams["figure.dpi"] = 200.0
 plt.rcParams['savefig.facecolor'] = "#131722"
@@ -55,7 +55,8 @@ class QuoteProcessor(object):
 		signal.signal(signal.SIGTERM, self.exit_gracefully)
 
 		self.logging = error_reporting.Client()
-		self.cache = Cache(ttl=5)
+		self.cache1 = Cache(ttl=5)
+		self.cache2 = Cache(ttl=5)
 
 		self.coinGecko = CoinGeckoAPI()
 		self.lastBitcoinQuote = {
@@ -94,7 +95,7 @@ class QuoteProcessor(object):
 				if service == b"quote":
 					response = self.request_quote(request)
 				elif service == b"depth":
-					response = self.request_depth_visualization(request)
+					response = self.request_depth(request)
 
 			except (KeyboardInterrupt, SystemExit): return
 			except Exception:
@@ -104,6 +105,42 @@ class QuoteProcessor(object):
 				try: self.socket.send_multipart([origin, delimeter, zlib.compress(pickle.dumps(response, -1))])
 				except: pass
 
+	def request_depth(self, request):
+		payload, quoteMessage, updatedQuoteMessage = None, None, None
+
+		for platform in request.platforms:
+			request.set_current(platform=platform)
+			hashCode = hash(request.requests[platform])
+			fromCache = False
+
+			if request.can_cache() and self.cache1.has(hashCode):
+				payload, updatedQuoteMessage = self.cache1.get(hashCode), None
+				fromCache = True
+			elif platform == "CCXT":
+				payload, updatedQuoteMessage = self.request_ccxt_depth(request)
+			elif platform == "IEXC":
+				payload, updatedQuoteMessage = self.request_iexc_depth(request)
+
+			if payload is not None:
+				if request.can_cache() and not fromCache: self.cache1.set(hashCode, payload)
+				if request.authorId != 401328409499664394 and request.requests[platform].ticker.base is not None and request.authorId not in constants.satellites:
+					database.document("dataserver/statistics/{}/{}".format(platform, str(uuid.uuid4()))).set({
+						"timestamp": time.time(),
+						"authorId": str(request.authorId),
+						"ticker": {
+							"base": request.requests[platform].ticker.base,
+							"quote": request.requests[platform].ticker.quote,
+							"id": request.requests[platform].ticker.id,
+							"bias": request.parserBias
+						},
+						"exchange": None if request.requests[platform].exchange is None else request.requests[platform].exchange.id
+					})
+				return payload, updatedQuoteMessage
+			elif updatedQuoteMessage is not None:
+				quoteMessage = updatedQuoteMessage
+
+		return None, quoteMessage
+
 	def request_quote(self, request):
 		payload, quoteMessage, updatedQuoteMessage = None, None, None
 
@@ -112,8 +149,8 @@ class QuoteProcessor(object):
 			hashCode = hash(request.requests[platform])
 			fromCache = False
 
-			if request.can_cache() and self.cache.has(hashCode):
-				payload, updatedQuoteMessage = self.cache.get(hashCode), None
+			if request.can_cache() and self.cache2.has(hashCode):
+				payload, updatedQuoteMessage = self.cache2.get(hashCode), None
 				fromCache = True
 			elif platform == "Alternative.me":
 				payload, updatedQuoteMessage = self.request_fear_greed_index(request)
@@ -129,7 +166,7 @@ class QuoteProcessor(object):
 				pass
 
 			if payload is not None:
-				if request.can_cache() and not fromCache: self.cache.set(hashCode, payload)
+				if request.can_cache() and not fromCache: self.cache2.set(hashCode, payload)
 				if request.authorId != 401328409499664394 and request.requests[platform].ticker.base is not None and request.authorId not in constants.satellites:
 					database.document("dataserver/statistics/{}/{}".format(platform, str(uuid.uuid4()))).set({
 						"timestamp": time.time(),
@@ -207,7 +244,6 @@ class QuoteProcessor(object):
 				rawData = exchange.properties.fetch_ohlcv(ticker.symbol, timeframe=tf.lower(), since=limitTimestamp, limit=300)
 				if len(rawData) == 0 or rawData[-1][4] is None or rawData[0][1] is None: return None, None
 			except:
-				print(traceback.format_exc())
 				return None, None
 
 			price = [rawData[-1][4], rawData[0][1]] if len(rawData) < candleOffset else [rawData[-1][4], rawData[-candleOffset][1]]
@@ -455,6 +491,7 @@ class QuoteProcessor(object):
 			try:
 				stock = Stock(ticker.id, token=os.environ["IEXC_KEY"])
 				rawData = stock.get_quote().loc[ticker.id]
+				if ticker.quote is None and exchange is not None: return None, "Price for `{}` is only available on `{}`.".format(ticker.id, rawData["primaryExchange"])
 				if rawData is None or (rawData["latestPrice"] is None and rawData["delayedPrice"] is None): return None, None
 			except:
 				return None, None
@@ -501,6 +538,7 @@ class QuoteProcessor(object):
 
 		try:
 			try:
+				if exchange is not None: return None, None
 				rawData = requests.get("https://cloud.iexapis.com/stable/fx/latest?symbols={}&token={}".format(ticker.id, os.environ["IEXC_KEY"])).json()
 				if rawData is None or type(rawData) is not list or len(rawData) == 0: return None, None
 			except:
@@ -569,12 +607,12 @@ class QuoteProcessor(object):
 			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
 			return None, None
 
-	def request_depth_visualization(self, request):
+	def request_ccxt_depth(self, request):
 		ticker = request.get_ticker()
 		exchange = request.get_exchange()
 
 		try:
-			if exchange is None: return None, "Data for {} isn't available.".format(ticker.name)
+			if exchange is None: return None, None
 			exchange = Exchange(exchange.id)
 
 			try:
@@ -585,89 +623,118 @@ class QuoteProcessor(object):
 			except:
 				return None, None
 
-			bidTotal = 0
-			xBids = [bestBid[0]]
-			yBids = [0]
-			for bid in depthData['bids']:
-				if len(xBids) < 10 or bid[0] > lastPrice * 0.9:
-					bidTotal += bid[1]
-					xBids.append(bid[0])
-					yBids.append(bidTotal)
-
-			askTotal = 0
-			xAsks = [bestAsk[0]]
-			yAsks = [0]
-			for ask in depthData['asks']:
-				if len(xAsks) < 10 or ask[0] < lastPrice * 1.1:
-					askTotal += ask[1]
-					xAsks.append(ask[0])
-					yAsks.append(askTotal)
-
-			fig = plt.figure(facecolor="#131722")
-			ax = fig.add_subplot(1, 1, 1)
-			ax.tick_params(color="#787878", labelcolor="#D9D9D9")
-			ax.step(xBids, yBids, where="post", color="#27A59A")
-			ax.step(xAsks, yAsks, where="post", color="#EF534F")
-			ax.fill_between(xBids, yBids, 0, facecolor="#27A59A", interpolate=True, step="post", alpha=0.33, zorder=2)
-			ax.fill_between(xAsks, yAsks, 0, facecolor="#EF534F", interpolate=True, step="post", alpha=0.33, zorder=2)
-			plt.axvline(x=lastPrice, color="#758696", linestyle="--")
-
-			ax.set_facecolor("#131722")
-			for spine in ax.spines.values():
-				spine.set_edgecolor("#787878")
-			ax.autoscale(enable=True, axis="both", tight=True)
-
-			def on_draw(event):
-				bboxes = []
-				for label in ax.get_yticklabels():
-					bbox = label.get_window_extent()
-					bboxi = bbox.transformed(fig.transFigure.inverted())
-					bboxes.append(bboxi)
-
-				bbox = mtransforms.Bbox.union(bboxes)
-				if fig.subplotpars.left < bbox.width:
-					fig.subplots_adjust(left=1.1 * bbox.width)
-					fig.canvas.draw()
-				return False
-
-			ax.yaxis.set_major_formatter(tkr.FuncFormatter(lambda x, p: format(int(x), ',')))
-			plt.setp(ax.get_xticklabels(), rotation=45, horizontalalignment='right')
-			lastPriceLabel = bestAsk[0] if bestAsk[1] >= bestBid[1] else bestBid[0]
-			xLabels = list(plt.xticks()[0][1:])
-			yLabels = list(plt.yticks()[0][1:])
-			for label in xLabels:
-				plt.axvline(x=label, color="#363C4F", linewidth=1, zorder=1)
-			for label in yLabels:
-				plt.axhline(y=label, color="#363C4F", linewidth=1, zorder=1)
-			diffLabels = 1 - xLabels[0] / xLabels[1]
-			bottomBound, topBound = lastPriceLabel * (1 - diffLabels * (1/4)), lastPriceLabel * (1 + diffLabels * (1/4))
-			xLabels = [l for l in xLabels if not (bottomBound <= l <= topBound)]
-
-			plt.xticks(xLabels + [lastPriceLabel])
-			plt.yticks(yLabels)
-			ax.set_xlim([xBids[-1], xAsks[-1]])
-			ax.set_ylim([0, max(bidTotal, askTotal)])
-
-			fig.canvas.mpl_connect("draw_event", on_draw)
-			plt.tight_layout()
-
-			rawImageData = BytesIO()
-			plt.savefig(rawImageData, format="png", edgecolor="none")
-			rawImageData.seek(0)
-
-			imageBuffer = BytesIO()
-			chartImage = Image.new("RGBA", (1600, 1200))
-			chartImage.paste(Image.open(rawImageData))
-			chartImage = Image.alpha_composite(chartImage, self.imageOverlays["Alpha depth"])
-			chartImage.save(imageBuffer, format="png")
-			imageData = base64.b64encode(imageBuffer.getvalue())
-			imageBuffer.close()
+			imageData = self.generate_depth_image(depthData, bestBid, bestAsk, lastPrice)
 
 			return imageData, None
 		except Exception:
 			print(traceback.format_exc())
 			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
 			return None, None
+
+	def request_iexc_depth(self, request):
+		ticker = request.get_ticker()
+		exchange = request.get_exchange()
+
+		try:
+			try:
+				stock = Stock(ticker.id, token=os.environ["IEXC_KEY"])
+				depthData = stock.get_book()[ticker.id]
+				rawData = stock.get_quote().loc[ticker.id]
+				if ticker.quote is None and exchange is not None: return None, "Orderbook visualization for `{}` is only available on `{}`.".format(ticker.id, rawData["primaryExchange"])
+				bestBid = depthData["bids"][0]
+				bestAsk = depthData["asks"][0]
+				lastPrice = (bestBid[0] + bestAsk[0]) / 2
+			except:
+				return None, None
+
+			imageData = self.generate_depth_image(depthData, bestBid, bestAsk, lastPrice)
+
+			return imageData, None
+		except Exception:
+			print(traceback.format_exc())
+			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+			return None, None
+
+	def generate_depth_image(self, depthData, bestBid, bestAsk, lastPrice):
+		bidTotal = 0
+		xBids = [bestBid[0]]
+		yBids = [0]
+		for bid in depthData['bids']:
+			if len(xBids) < 10 or bid[0] > lastPrice * 0.9:
+				bidTotal += bid[1]
+				xBids.append(bid[0])
+				yBids.append(bidTotal)
+
+		askTotal = 0
+		xAsks = [bestAsk[0]]
+		yAsks = [0]
+		for ask in depthData['asks']:
+			if len(xAsks) < 10 or ask[0] < lastPrice * 1.1:
+				askTotal += ask[1]
+				xAsks.append(ask[0])
+				yAsks.append(askTotal)
+
+		fig = plt.figure(facecolor="#131722")
+		ax = fig.add_subplot(1, 1, 1)
+		ax.tick_params(color="#787878", labelcolor="#D9D9D9")
+		ax.step(xBids, yBids, where="post", color="#27A59A")
+		ax.step(xAsks, yAsks, where="post", color="#EF534F")
+		ax.fill_between(xBids, yBids, 0, facecolor="#27A59A", interpolate=True, step="post", alpha=0.33, zorder=2)
+		ax.fill_between(xAsks, yAsks, 0, facecolor="#EF534F", interpolate=True, step="post", alpha=0.33, zorder=2)
+		plt.axvline(x=lastPrice, color="#758696", linestyle="--")
+
+		ax.set_facecolor("#131722")
+		for spine in ax.spines.values():
+			spine.set_edgecolor("#787878")
+		ax.autoscale(enable=True, axis="both", tight=True)
+
+		def on_draw(event):
+			bboxes = []
+			for label in ax.get_yticklabels():
+				bbox = label.get_window_extent()
+				bboxi = bbox.transformed(fig.transFigure.inverted())
+				bboxes.append(bboxi)
+
+			bbox = mtransforms.Bbox.union(bboxes)
+			if fig.subplotpars.left < bbox.width:
+				fig.subplots_adjust(left=1.1 * bbox.width)
+				fig.canvas.draw()
+			return False
+
+		ax.yaxis.set_major_formatter(tkr.FuncFormatter(lambda x, p: format(int(x), ',')))
+		plt.setp(ax.get_xticklabels(), rotation=45, horizontalalignment='right')
+		lastPriceLabel = bestAsk[0] if bestAsk[1] >= bestBid[1] else bestBid[0]
+		xLabels = list(plt.xticks()[0][1:])
+		yLabels = list(plt.yticks()[0][1:])
+		for label in xLabels:
+			plt.axvline(x=label, color="#363C4F", linewidth=1, zorder=1)
+		for label in yLabels:
+			plt.axhline(y=label, color="#363C4F", linewidth=1, zorder=1)
+		diffLabels = 1 - xLabels[0] / xLabels[1]
+		bottomBound, topBound = lastPriceLabel * (1 - diffLabels * (1/4)), lastPriceLabel * (1 + diffLabels * (1/4))
+		xLabels = [l for l in xLabels if not (bottomBound <= l <= topBound)]
+
+		plt.xticks(xLabels + [lastPriceLabel])
+		plt.yticks(yLabels)
+		ax.set_xlim([xBids[-1], xAsks[-1]])
+		ax.set_ylim([0, max(bidTotal, askTotal)])
+
+		fig.canvas.mpl_connect("draw_event", on_draw)
+		plt.tight_layout()
+
+		rawImageData = BytesIO()
+		plt.savefig(rawImageData, format="png", edgecolor="none")
+		rawImageData.seek(0)
+
+		imageBuffer = BytesIO()
+		chartImage = Image.new("RGBA", (1600, 1200))
+		chartImage.paste(Image.open(rawImageData))
+		chartImage = Image.alpha_composite(chartImage, self.imageOverlays["Alpha depth"])
+		chartImage.save(imageBuffer, format="png")
+		imageData = base64.b64encode(imageBuffer.getvalue())
+		imageBuffer.close()
+
+		return imageData
 
 
 if __name__ == "__main__":

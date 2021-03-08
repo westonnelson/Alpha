@@ -24,7 +24,7 @@ class PriceRequestHandler(object):
 
 		self.requests = {}
 		for platform in self.platforms:
-			self.requests[platform] = PriceRequest(tickerId, platform)
+			self.requests[platform] = PriceRequest(tickerId, platform, self.parserBias)
 
 	def parse_argument(self, argument):
 		for platform, request in self.requests.items():
@@ -233,13 +233,20 @@ class PriceRequest(object):
 			Parameter("lld", "longs/shorts ratio", ["ls", "l/s", "longs/shorts", "long/short"], lld="ls"),
 			Parameter("lld", "shorts/longs ratio", ["sl", "s/l", "shorts/longs", "short/long"], lld="sl"),
 			Parameter("lld", "dominance", ["dom", "dominance"], lld="dom"),
-			Parameter("autoDeleteOverride", "autodelete", ["del", "delete", "autodelete"], coingecko=True, ccxt=True, iexc=True, quandl=True, alternativeme=True, lld=True)
+			Parameter("autoDeleteOverride", "autodelete", ["del", "delete", "autodelete"], coingecko=True, ccxt=True, iexc=True, quandl=True, alternativeme=True, lld=True),
+			Parameter("public", "public trigger", ["pub", "publish", "public"], coingecko=True, ccxt=True, iexc=True, quandl=True, alternativeme=True, lld=True),
+			Parameter("forcePlatform", "Force quote on CoinGecko", ["cg", "coingecko"], coingecko=True),
+			Parameter("forcePlatform", "Force quote on a crypto exchange", ["cx", "ccxt", "crypto"], ccxt=True),
+			Parameter("forcePlatform", "Force quote on a stock exchange", ["ix", "iexc", "stock"], iexc=True),
+			Parameter("forcePlatform", "Force quote on Alternative.me", ["am", "alternativeme"], alternativeme=True)
 		]
 	}
 
-	def __init__(self, tickerId, platform):
+	def __init__(self, tickerId, platform, bias):
 		self.ticker = Ticker(tickerId)
 		self.exchange = None
+		self.parserBias = bias
+
 		self.filters = []
 		self.numericalParameters = []
 
@@ -284,9 +291,9 @@ class PriceRequest(object):
 	def process_ticker(self, defaults, bias):
 		filters = [e.parsed[self.platform] for e in self.filters]
 		if any([e in filters for e in ["funding", "oi"]]):
-			if not self.hasExchange: self.exchange = TickerParser.find_exchange("bitmex", self.platform)[1]
+			if not self.hasExchange: self.exchange = TickerParser.find_exchange("bitmex", self.platform, self.parserBias)[1]
 		elif any([e in filters for e in ["ls", "sl"]]):
-			if not self.hasExchange: self.exchange = TickerParser.find_exchange("bitfinex", self.platform)[1]
+			if not self.hasExchange: self.exchange = TickerParser.find_exchange("bitfinex", self.platform, self.parserBias)[1]
 
 		for i in range(len(self.ticker.parts)):
 			part = self.ticker.parts[i]
@@ -295,6 +302,8 @@ class PriceRequest(object):
 			if updatedTicker is not None:
 				self.ticker.parts[i] = updatedTicker
 				if not self.ticker.isAggregatedTicker: self.exchange = updatedExchange
+			else:
+				self.shouldFail = True
 		self.ticker.update_ticker_id()
 
 	def add_parameter(self, argument, type):
@@ -310,7 +319,7 @@ class PriceRequest(object):
 		return isSupported, parsedParameter
 
 	def add_exchange(self, argument):
-		exchangeSupported, parsedExchange = TickerParser.find_exchange(argument, self.platform)
+		exchangeSupported, parsedExchange = TickerParser.find_exchange(argument, self.platform, self.parserBias)
 		if parsedExchange is not None and not self.hasExchange:
 			if not exchangeSupported:
 				outputMessage = "`{}` exchange is not supported by {}.".format(parsedExchange.name, self.platform)

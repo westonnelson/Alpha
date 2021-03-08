@@ -24,7 +24,7 @@ class TradeRequestHandler(object):
 
 		self.requests = {}
 		for platform in self.platforms:
-			self.requests[platform] = TradeRequest(tickerId, platform)
+			self.requests[platform] = TradeRequest(tickerId, platform, self.parserBias)
 
 	def parse_argument(self, argument):
 		for platform, request in self.requests.items():
@@ -181,9 +181,11 @@ class TradeRequest(object):
 		]
 	}
 
-	def __init__(self, tickerId, platform):
+	def __init__(self, tickerId, platform, bias):
 		self.ticker = Ticker(tickerId)
 		self.exchange = None
+		self.parserBias = bias
+
 		self.filters = []
 		self.numericalParameters = []
 
@@ -223,6 +225,8 @@ class TradeRequest(object):
 			if updatedTicker is not None:
 				self.ticker.parts[i] = updatedTicker
 				if not self.ticker.isAggregatedTicker: self.exchange = updatedExchange
+			else:
+				self.shouldFail = True
 		self.ticker.update_ticker_id()
 
 	def add_parameter(self, argument, type):
@@ -238,7 +242,7 @@ class TradeRequest(object):
 		return isSupported, parsedParameter
 
 	def add_exchange(self, argument):
-		exchangeSupported, parsedExchange = TickerParser.find_exchange(argument, self.platform)
+		exchangeSupported, parsedExchange = TickerParser.find_exchange(argument, self.platform, self.parserBias)
 		if parsedExchange is not None and not self.hasExchange:
 			if not exchangeSupported:
 				outputMessage = "`{}` exchange is not supported by {}.".format(parsedExchange.name, self.platform)

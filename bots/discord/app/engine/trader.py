@@ -33,8 +33,7 @@ class PaperTrader(object):
 		cleanUp = {
 			"buy": ["long"],
 			"sell": ["short"],
-			"stop-sell": ["sell stop", "short stop", "stop"],
-			"trailing-stop-sell": ["trailing stop", "stop trailing", "trailing sell stop", "sell stop trailing", "trailing short stop", "short stop trailing"]
+			"stop-sell": ["sell stop", "short stop", "stop"]
 		}
 		for e in cleanUp:
 			for i in cleanUp[e]:
@@ -93,81 +92,42 @@ class PaperTrader(object):
 		execAmountText = Utils.format_amount(exchange.properties, ticker.symbol, execAmount)
 		execAmount = float(execAmountText.replace(",", ""))
 
-		if exchange.id in ["bitmex"]:
-			baseValue = execAmount / execPrice
-			quoteValue = execAmount
-			amountPrecision = exchange.properties.markets[ticker.symbol]["precision"]["amount"]
-			amountLimits = exchange.properties.markets[ticker.symbol]["limits"]["cost"]
-			
-			if execAmount < 1:
-				outputTitle = "Insuficient paper order size"
-				outputMessage = "Order size of {:,.0f} contract is less than the minimum required size of 1 contract.".format(execAmount)
-				return outputTitle, outputMessage, paper, None
-			elif execAmount > amountLimits["max"]:
-				outputTitle = "Paper order size exeeds maximum allowed order size"
-				outputMessage = "Order size must not exceed {:,.0f} {}.".format(amountLimits["max"], base)
-			
-			elif not reduceOnly and ((orderType.endswith("sell") and baseValue > baseOrder["amount"]) or (orderType.endswith("buy") and quoteValue / execPrice > quoteOrder["amount"])):
-				outputTitle = "Insuficient paper wallet balance"
-				outputMessage = "Order size of {} {} exeeds your paper wallet balance of {:,.8f} {}.".format(execAmountText, base, quoteOrder["amount"] if orderType.endswith("buy") else baseOrder["amount"], quote if orderType.endswith("buy") else base)
-				return outputTitle, outputMessage, paper, None
-			elif (orderType.endswith("buy") and quoteOrder["amount"] == 0) or (orderType.endswith("sell") and baseOrder["amount"] == 0):
-				outputTitle = "Insuficient paper wallet balance"
-				outputMessage = "Your {} balance is empty.".format(quote if orderType.endswith("buy") else base)
-				return outputTitle, outputMessage, paper, None
+		baseValue = execAmount
+		quoteValue = execAmount * execPrice
+		amountPrecision = exchange.properties.markets[ticker.symbol]["precision"]["amount"]
+		amountLimits = exchange.properties.markets[ticker.symbol]["limits"]["amount"]
 
+		if execAmount < amountLimits["min"]:
+			outputTitle = "Insuficient paper order size"
+			outputMessage = ("Order size of {:,.%df} {} is less than the minimum required size of {:,.%df} {}." % (amountPrecision, amountPrecision)).format(execAmount, quote, amountLimits["min"], base)
+			return outputTitle, outputMessage, paper, None
+		elif execAmount > amountLimits["max"]:
+			outputTitle = "Paper order size exeeds maximum allowed order size"
+			outputMessage = ("Order size must not exceed {:,.%df} {}." % (amountPrecision)).format(amountLimits["max"], base)
+			return outputTitle, outputMessage, paper, None
+		elif not reduceOnly and ((orderType.endswith("sell") and baseValue > baseOrder["amount"]) or (orderType.endswith("buy") and quoteValue > quoteOrder["amount"])):
+			outputTitle = "Insuficient paper wallet balance"
+			outputMessage = "Order size of {} {} exeeds your paper wallet balance of {:,.8f} {}.".format(execAmountText, base, quoteOrder["amount"] if orderType.endswith("buy") else baseOrder["amount"], quote if orderType.endswith("buy") else base)
+			return outputTitle, outputMessage, paper, None
+		elif (orderType.endswith("buy") and quoteOrder["amount"] == 0) or (orderType.endswith("sell") and baseOrder["amount"] == 0):
+			outputTitle = "Insuficient paper wallet balance"
+			outputMessage = "Your {} balance is empty.".format(quote if orderType.endswith("buy") else base)
+			return outputTitle, outputMessage, paper, None
 
-			newOrder = {
-				"id": str(uuid.uuid4()),
-				"orderType": orderType,
-				"request": zlib.compress(pickle.dumps(request, -1)),
-				"amount": execAmount,
-				"price": request.get_numerical_parameters()[0] if isPricePercent else execPrice,
-				"highest": execPrice,
-				"timestamp": int(time.time() * 1000),
-				"status": "placed",
-				"parameters": [isPricePercent, isLimitOrder, reduceOnly]
-			}
-			priceText = "{:,.2f} %".format(request.get_numerical_parameters()[0]) if isPricePercent else "{} {}".format(execPriceText, ticker.quote)
-			conversionText = None if isPricePercent else "{} contracts ≈ {:,.6f} {}".format(execAmountText, baseValue, ticker.base)
-			return None, None, paper, Order(newOrder, request, priceText=priceText, conversionText=conversionText, amountText=execAmountText)
-		else:
-			baseValue = execAmount
-			quoteValue = execAmount * execPrice
-			amountPrecision = exchange.properties.markets[ticker.symbol]["precision"]["amount"]
-			amountLimits = exchange.properties.markets[ticker.symbol]["limits"]["amount"]
-
-			if execAmount < amountLimits["min"]:
-				outputTitle = "Insuficient paper order size"
-				outputMessage = ("Order size of {:,.%df} {} is less than the minimum required size of {:,.%df} {}." % (amountPrecision, amountPrecision)).format(execAmount, quote, amountLimits["min"], base)
-				return outputTitle, outputMessage, paper, None
-			elif execAmount > amountLimits["max"]:
-				outputTitle = "Paper order size exeeds maximum allowed order size"
-				outputMessage = ("Order size must not exceed {:,.%df} {}." % (amountPrecision)).format(amountLimits["max"], base)
-				return outputTitle, outputMessage, paper, None
-			elif not reduceOnly and ((orderType.endswith("sell") and baseValue > baseOrder["amount"]) or (orderType.endswith("buy") and quoteValue > quoteOrder["amount"])):
-				outputTitle = "Insuficient paper wallet balance"
-				outputMessage = "Order size of {} {} exeeds your paper wallet balance of {:,.8f} {}.".format(execAmountText, base, quoteOrder["amount"] if orderType.endswith("buy") else baseOrder["amount"], quote if orderType.endswith("buy") else base)
-				return outputTitle, outputMessage, paper, None
-			elif (orderType.endswith("buy") and quoteOrder["amount"] == 0) or (orderType.endswith("sell") and baseOrder["amount"] == 0):
-				outputTitle = "Insuficient paper wallet balance"
-				outputMessage = "Your {} balance is empty.".format(quote if orderType.endswith("buy") else base)
-				return outputTitle, outputMessage, paper, None
-
-			newOrder = {
-				"id": str(uuid.uuid4()),
-				"orderType": orderType,
-				"request": zlib.compress(pickle.dumps(request, -1)),
-				"amount": execAmount,
-				"price": request.get_numerical_parameters()[0] if isPricePercent else execPrice,
-				"highest": execPrice,
-				"timestamp": int(time.time() * 1000),
-				"status": "placed",
-				"parameters": [isPricePercent, isLimitOrder, reduceOnly]
-			}
-			priceText = "{:,.2f} %".format(request.get_numerical_parameters()[0]) if isPricePercent else "{} {}".format(execPriceText, ticker.quote)
-			conversionText = None if isPricePercent else "{} {} ≈ {:,.6f} {}".format(execAmountText, ticker.base, quoteValue, ticker.quote)
-			return None, None, paper, Order(newOrder, request, priceText=priceText, conversionText=conversionText, amountText=execAmountText)
+		newOrder = {
+			"id": str(uuid.uuid4()),
+			"orderType": orderType,
+			"request": zlib.compress(pickle.dumps(request, -1)),
+			"amount": execAmount,
+			"price": request.get_numerical_parameters()[0] if isPricePercent else execPrice,
+			"highest": execPrice,
+			"timestamp": int(time.time() * 1000),
+			"status": "placed",
+			"parameters": [isPricePercent, isLimitOrder, reduceOnly]
+		}
+		priceText = "{:,.2f} %".format(request.get_numerical_parameters()[0]) if isPricePercent else "{} {}".format(execPriceText, ticker.quote)
+		conversionText = None if isPricePercent else "{} {} ≈ {:,.6f} {}".format(execAmountText, ticker.base, quoteValue, ticker.quote)
+		return None, None, paper, Order(newOrder, request, priceText=priceText, conversionText=conversionText, amountText=execAmountText)
 
 	def post_trade(self, paper, orderType, request, payload, pendingOrder):
 		ticker = request.get_ticker()
@@ -183,33 +143,20 @@ class PaperTrader(object):
 		baseOrder = paper[exchange.id]["balance"][base]
 		quoteOrder = paper[exchange.id]["balance"][quote]
 
-		if exchange.id == "bitmex":
-			# FIXME: BROKEN WHEN SELL ORDER CLOSES CURRENT LONG AND OPENS NEW SHORT
-			averageEntry = (baseOrder["entry"] if baseOrder["amount"] + execAmount != 0 else 0) if reduceOnly else (baseOrder["entry"] * baseOrder["amount"] + execPrice * execAmount) / (baseOrder["amount"] + execAmount)
-			quoteValue = (abs(execAmount) * (-1 if reduceOnly else 1)) / (averageEntry if averageEntry != 0 else baseOrder["entry"]) / leverage
-			roi = ((execPrice - baseOrder["entry"]) * 0.000001 if ticker.symbol == "ETH/USD" else (1 / baseOrder["entry"] - 1 / execPrice)) * execAmount * -1 if baseOrder["entry"] != 0 and reduceOnly else 0
+		if orderType == "buy":
+			if reduceOnly: execAmount = min(abs(quoteOrder["amount"]), execPrice * execAmount) / execPrice
+			orderFee = execAmount * exchange.properties.markets[ticker.symbol]["maker" if isLimitOrder else "taker"]
+			
+			quoteOrder["amount"] -= execPrice * execAmount
+			if not isLimitOrder:
+				baseOrder["amount"] += execAmount - orderFee
+		elif orderType == "sell":
+			if reduceOnly: execAmount = min(abs(baseOrder["amount"]), execAmount)
 			orderFee = execAmount * exchange.properties.markets[ticker.symbol]["maker" if isLimitOrder else "taker"]
 
-			if orderType == "buy" or orderType == "sell":
-				quoteOrder["amount"] += round(roi - (quoteValue + orderFee / execPrice), 8) # DEBUG: FEE POTENTIALLY BROKEN DUE TO NEGATIVE ORDER SIZE AND REBATE FOR MARKET MAKERS
-				if not isLimitOrder:
-					baseOrder["entry"] = averageEntry
-					baseOrder["amount"] += execAmount
-		else:
-			if orderType == "buy":
-				if reduceOnly: execAmount = min(abs(quoteOrder["amount"]), execPrice * execAmount) / execPrice
-				orderFee = execAmount * exchange.properties.markets[ticker.symbol]["maker" if isLimitOrder else "taker"]
-				
-				quoteOrder["amount"] -= execPrice * execAmount
-				if not isLimitOrder:
-					baseOrder["amount"] += execAmount - orderFee
-			elif orderType == "sell":
-				if reduceOnly: execAmount = min(abs(baseOrder["amount"]), execAmount)
-				orderFee = execAmount * exchange.properties.markets[ticker.symbol]["maker" if isLimitOrder else "taker"]
-
-				baseOrder["amount"] -= execAmount
-				if not isLimitOrder:
-					quoteOrder["amount"] += (execAmount - orderFee) * execPrice
+			baseOrder["amount"] -= execAmount
+			if not isLimitOrder:
+				quoteOrder["amount"] += (execAmount - orderFee) * execPrice
 
 		pendingOrder.parameters["status"] = "placed" if isLimitOrder else "filled"
 		paper[exchange.id]["openOrders" if isLimitOrder else "history"].append(pendingOrder.parameters)

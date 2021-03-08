@@ -24,6 +24,7 @@ database = firestore.Client()
 
 class CronJobs(object):
 	accountProperties = DatabaseConnector(mode="account")
+	registeredAccounts = {}
 
 	zmqContext = zmq.Context.instance()
 
@@ -56,8 +57,9 @@ class CronJobs(object):
 				timeframes = Utils.get_accepted_timeframes(t)
 
 				if "1m" in timeframes:
+					self.update_accounts()
 					self.process_price_alerts()
-					# self.update_paper_limit_orders()
+					self.process_paper_limit_orders()
 
 			except (KeyboardInterrupt, SystemExit): return
 			except Exception:
@@ -79,6 +81,15 @@ class CronJobs(object):
 				print(traceback.format_exc())
 				if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
 
+	def update_accounts(self):
+		try:
+			loop = asyncio.get_event_loop()
+			self.registeredAccounts = loop.run_until_complete(self.accountProperties.keys())
+		except (KeyboardInterrupt, SystemExit): pass
+		except Exception:
+			print(traceback.format_exc())
+			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+
 
 	# -------------------------
 	# Price Alerts
@@ -90,12 +101,11 @@ class CronJobs(object):
 		"""
 
 		try:
+			users = database.document("details/marketAlerts").collections()
 			with ThreadPoolExecutor(max_workers=20) as pool:
-				accounts = pool.submit(asyncio.run, self.accountProperties.keys()).result()
-				users = database.document("details/marketAlerts").collections()
 				for user in users:
 					accountId = user.id
-					authorId = pool.submit(asyncio.run, self.accountProperties.match(accountId)).result() if accountId in accounts else accountId
+					authorId = self.registeredAccounts.get(accountId, accountId)
 					if authorId is None: continue
 					for alert in user.stream():
 						pool.submit(self.check_price_alert, authorId, accountId, alert.reference, alert.to_dict())
@@ -135,11 +145,10 @@ class CronJobs(object):
 						"user": authorId,
 						"channel": alert["channel"]
 					})
-
 					reference.delete()
 
 				else:
-					print("{}: price alert for {} ({}) at {} {} expired.".format(accountId, ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote))
+					print("{}: price alert for {} ({}) at {} {} expired".format(accountId, ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote))
 
 			else:
 				socket.send_multipart([b"cronjob", b"candle", zlib.compress(pickle.dumps(alertRequest, -1))])
@@ -165,14 +174,13 @@ class CronJobs(object):
 									"subtitle": "Alpha Price Alerts",
 									"description": None,
 									"color": 6765239,
-									"user": authorId,
+									"user": None if alertRequest.find_parameter_in_list("public", alertRequest.get_filters(), default=False) else authorId,
 									"channel": alert["channel"]
 								})
-
 								reference.delete()
 
 							else:
-								print("{}: price of {} ({}) hit {} {}.".format(accountId, ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote))
+								print("{}: price of {} ({}) hit {} {}".format(accountId, ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote))
 							break
 
 		except (KeyboardInterrupt, SystemExit): pass
@@ -186,11 +194,27 @@ class CronJobs(object):
 	# Paper trading
 	# -------------------------
 
-	def update_paper_limit_orders(self):
+	def process_paper_limit_orders(self):
 		"""Process paper limit orders
 
 		"""
 
+		try:
+			users = database.document("details/openPaperOrders").collections()
+			with ThreadPoolExecutor(max_workers=20) as pool:
+				for user in users:
+					accountId = user.id
+					authorId = self.registeredAccounts.get(accountId, accountId)
+					if authorId is None: continue
+					for order in user.stream():
+						pool.submit(self.check_paper_order, authorId, accountId, order.reference, order.to_dict())
+
+		except (KeyboardInterrupt, SystemExit): pass
+		except Exception:
+			print(traceback.format_exc())
+			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+
+	def check_paper_order(self, authorId, accountId, reference, order):
 		socket = CronJobs.zmqContext.socket(zmq.REQ)
 		socket.connect("tcp://candle-server:6900")
 		socket.setsockopt(zmq.LINGER, 3)
@@ -198,100 +222,115 @@ class CronJobs(object):
 		poller.register(socket, zmq.POLLIN)
 
 		try:
-			for accountId in self.accountProperties:
-				if "customer" in self.accountProperties[accountId]:
-					for exchange in self.accountProperties[accountId]["paperTrader"]:
-						if exchange in ["globalLastReset", "globalResetCount"]: continue
-						paper = self.accountProperties[accountId]["paperTrader"][exchange]
+			paperRequest = pickle.loads(zlib.decompress(order["request"]))
+			paperRequest.timestamp = time.time()
+			ticker = paperRequest.get_ticker()
+			exchange = paperRequest.get_exchange()
 
-						for order in list(paper["openOrders"]):
-							paperRequest = pickle.loads(zlib.decompress(order["request"]))
-							ticker = paperRequest.get_ticker()
-							exchange = paperRequest.get_exchange()
+			if paperRequest.currentPlatform == "CCXT":
+				levelText = Utils.format_price(exchange.properties, ticker.symbol, order["price"])
+			elif paperRequest.currentPlatform == "IEXC":
+				levelText = "{:,.5f}".format(order["price"])
+			else:
+				levelText = "{:,.0f}".format(order["price"])
 
-							if paperRequest.currentPlatform == "CCXT":
-								levelText = Utils.format_price(exchange.properties, ticker.symbol, order["price"])
-							elif paperRequest.currentPlatform == "IEXC" or paperRequest.currentPlatform == "Quandl":
-								levelText = "{:,.5f}".format(order["price"])
-							else:
-								levelText = "{:,.0f}".format(order["price"])
+			if order["timestamp"] < time.time() - 86400 * 30.5 * 6:
+				if os.environ["PRODUCTION_MODE"]:
+					database.document("discord/properties/messages/{}".format(str(uuid.uuid4()))).set({
+						"title": "Paper {} order of {} {} on {} at {} {} expired.".format(order["orderType"].replace("-", " "), Utils.format_amount(exchange.properties, ticker.symbol, order["amount"]), ticker.base, paperRequest.currentPlatform if exchange is None else exchange.name, order["price"], ticker.quote),
+						"subtitle": "Alpha Paper Trader",
+						"description": "Paper orders automatically cancel after 6 months. If you'd like to keep your order, you'll have to set it again.",
+						"color": 6765239,
+						"user": authorId,
+						"channel": order["channel"]
+					})
+					reference.delete()
 
-							socket.send_multipart([b"cronjob", b"candle", order["request"]])
-							responses = poller.poll(5 * 1000)
+				else:
+					print("{}: paper {} order of {} {} on {} at {} expired".format(order["orderType"].replace("-", " "), Utils.format_amount(exchange.properties, ticker.symbol, order["amount"]), ticker.base, paperRequest.currentPlatform if exchange is None else exchange.name, order["price"], ticker.quote))
 
-							if len(responses) != 0:
-								response = socket.recv()
-								payload, responseText = pickle.loads(zlib.decompress(response))
+			else:
+				socket.send_multipart([b"cronjob", b"candle", zlib.compress(pickle.dumps(paperRequest, -1))])
+				responses = poller.poll(30 * 1000)
 
-								if payload is None:
-									if responseText is not None:
-										print("Paper order request error", responseText)
-										if os.environ["PRODUCTION_MODE"]: self.logging.report(responseText)
-									return
+				if len(responses) != 0:
+					response = socket.recv()
+					payload, responseText = pickle.loads(zlib.decompress(response))
 
-								for candle in reversed(payload["candles"]):
-									if candle[0] < order["timestamp"] / 1000: break
-									if candle[3] < order["price"] < candle[2]:
-										baseOrder = paper["balance"][ticker.base]
-										quoteOrder = paper["balance"][ticker.quote]
+					if payload is None:
+						if responseText is not None:
+							print("Paper order request error", responseText)
+							if os.environ["PRODUCTION_MODE"]: self.logging.report(responseText)
+						return
 
-										execAmount = order["amount"]
-										isPricePercent, isLimitOrder, reduceOnly = order["parameters"]
-										if reduceOnly and ((order["orderType"] == "buy" and baseOrder["amount"] >= 0) or (order["orderType"] == "sell" and baseOrder["amount"] <= 0)):
-											order["status"] = "canceled"
-											paper["openOrders"].remove(order)
+					paperRequest.set_current(platform=payload["platform"])
+					for candle in reversed(payload["candles"]):
+						if candle[0] < order["timestamp"]: break
+						if (candle[3] <= order["level"] and order["placement"] == "below") or (order["level"] <= candle[2] and order["placement"] == "above"):
+							loop = asyncio.get_event_loop()
+							accountProperties = loop.run_until_complete(self.accountProperties.get(accountId))
 
-										if exchange.id == "bitmex":
-											averageEntry = (baseOrder["entry"] * baseOrder["amount"] + order["price"] * execAmount) / (baseOrder["amount"] + execAmount) if baseOrder["amount"] + execAmount != 0 else 0
-											quoteValue = (abs(execAmount) * (-1 if reduceOnly else 1)) / (averageEntry if averageEntry != 0 else baseOrder["entry"]) / leverage
-											roi = ((order["price"] - baseOrder["entry"]) * 0.000001 if ticker.symbol == "ETH/USD" else (1 / baseOrder["entry"] - 1 / order["price"])) * baseOrder["amount"] if baseOrder["entry"] != 0 else 0
-											orderFee = execAmount * exchange.properties.markets[ticker.symbol]["maker" if isLimitOrder else "taker"]
+							if os.environ["PRODUCTION_MODE"]:
+								if "paperTrader" in accountProperties:
+									paper = accountProperties["paperTrader"]
+									baseOrder = paper.get(ticker.base, 0)
+									quoteOrder = paper.get(ticker.quote, 0)
 
-											if order["orderType"] == "buy" or order["orderType"] == "sell":
-												baseOrder["entry"] = averageEntry
-												baseOrder["amount"] += execAmount
-											elif order["orderType"] == "stop-buy" or order["orderType"] == "stop-sell":
-												quoteOrder["amount"] += round(roi - (quoteValue + abs(orderFee) / order["price"]), 8)
-												baseOrder["entry"] = averageEntry
-												baseOrder["amount"] += execAmount
-										else:
-											if order["orderType"] == "buy":
-												if reduceOnly: execAmount = min(abs(quoteOrder["amount"]), order["price"] * execAmount) / order["price"]
-												orderFee = execAmount * exchange.properties.markets[ticker.symbol]["maker"]
+									execAmount = order["amount"]
+									isPricePercent, isLimitOrder, reduceOnly = order["parameters"]
+									if reduceOnly and ((order["orderType"] == "buy" and baseOrder["amount"] >= 0) or (order["orderType"] == "sell" and baseOrder["amount"] <= 0)):
+										order["status"] = "canceled"
+										database.document("discord/properties/messages/{}".format(str(uuid.uuid4()))).set({
+											"title": "Paper {} order of {} {} on {} at {} {} expired.".format(order["orderType"].replace("-", " "), Utils.format_amount(exchange.properties, ticker.symbol, execAmount), ticker.base, paperRequest.currentPlatform if exchange is None else exchange.name, order["price"], ticker.quote),
+											"subtitle": "Alpha Paper Trader",
+											"description": "Paper orders automatically cancel after 6 months. If you'd like to keep your order, you'll have to set it again.",
+											"color": 6765239,
+											"user": authorId,
+											"channel": order["channel"]
+										})
+										reference.delete()
 
-												baseOrder["amount"] += execAmount - orderFee
-											elif order["orderType"] == "sell":
-												if reduceOnly: execAmount = min(abs(baseOrder["amount"]), execAmount)
-												orderFee = execAmount * exchange.properties.markets[ticker.symbol]["maker"]
+									else:
+										if order["orderType"] == "buy":
+											if reduceOnly: execAmount = min(abs(quoteOrder["amount"]), order["price"] * execAmount) / order["price"]
+											orderFee = execAmount * exchange.properties.markets[ticker.symbol]["maker"]
 
-												quoteOrder["amount"] += (execAmount - orderFee) * order["price"]
-											elif order["orderType"] == "stop-buy":
-												if reduceOnly: execAmount = min(abs(quoteOrder["amount"]), order["price"] * execAmount) / order["price"]
-												orderFee = execAmount * exchange.properties.markets[ticker.symbol]["taker"]
+											baseOrder["amount"] += execAmount - orderFee
+										elif order["orderType"] == "sell":
+											if reduceOnly: execAmount = min(abs(baseOrder["amount"]), execAmount)
+											orderFee = execAmount * exchange.properties.markets[ticker.symbol]["maker"]
 
-												baseOrder["amount"] += execAmount - orderFee
-												quoteOrder["amount"] -= order["price"] * execAmount
-											elif order["orderType"] == "stop-sell":
-												if reduceOnly: execAmount = min(abs(baseOrder["amount"]), execAmount)
-												orderFee = execAmount * exchange.properties.markets[ticker.symbol]["taker"]
+											quoteOrder["amount"] += (execAmount - orderFee) * order["price"]
+										elif order["orderType"] == "stop-buy":
+											if reduceOnly: execAmount = min(abs(quoteOrder["amount"]), order["price"] * execAmount) / order["price"]
+											orderFee = execAmount * exchange.properties.markets[ticker.symbol]["taker"]
 
-												baseOrder["amount"] -= execAmount
-												quoteOrder["amount"] += (execAmount - orderFee) * order["price"]
+											baseOrder["amount"] += execAmount - orderFee
+											quoteOrder["amount"] -= order["price"] * execAmount
+										elif order["orderType"] == "stop-sell":
+											if reduceOnly: execAmount = min(abs(baseOrder["amount"]), execAmount)
+											orderFee = execAmount * exchange.properties.markets[ticker.symbol]["taker"]
 
-										paper["openOrders"].remove(order)
+											baseOrder["amount"] -= execAmount
+											quoteOrder["amount"] += (execAmount - orderFee) * order["price"]
+									
 										order["status"] = "filled"
-										paper["history"].append(order)
+										database.document("details/paperOrderHistory/{}/{}".format(accountId, str(uuid.uuid4()))).set(order)
 										database.document("accounts/{}".format(accountId)).set({"paperTrader": {exchange.id: paper}}, merge=True)
 
-										if self.server.accountProperties[accountId]["oauth"]["discord"].get("userId") is not None:
-											database.document("discord/properties/messages/{}".format(str(uuid.uuid4()))).set({
-												"title": "Paper {} order of {} {} on {} at {} was successfully executed.".format(order["orderType"].replace("-", " "), Utils.format_amount(exchange.properties, ticker.symbol, order["amount"]), order["base"], exchange.name, order["price"]),
-												"subtitle": "Alpha Paper Trader",
-												"description": None,
-												"color": 6765239,
-												"user": self.server.accountProperties[accountId]["oauth"]["discord"]["userId"],
-												"channel": "611107823111372810"
-											})
+										database.document("discord/properties/messages/{}".format(str(uuid.uuid4()))).set({
+											"title": "Paper {} order of {} {} on {} at {} {} was successfully executed.".format(order["orderType"].replace("-", " "), Utils.format_amount(exchange.properties, ticker.symbol, execAmount), ticker.base, paperRequest.currentPlatform if exchange is None else exchange.name, order["price"], ticker.quote),
+											"subtitle": "Alpha Paper Trader",
+											"description": None,
+											"color": 6765239,
+											"user": authorId,
+											"channel": order["channel"]
+										})
+										reference.delete()
+
+								else:
+									print("{}: paper {} order of {} {} on {} at {} {} was successfully executed".format(order["orderType"].replace("-", " "), Utils.format_amount(exchange.properties, ticker.symbol, order["amount"]), ticker.base, paperRequest.currentPlatform if exchange is None else exchange.name, order["price"], ticker.quote))
+							break
 
 		except (KeyboardInterrupt, SystemExit): pass
 		except Exception:

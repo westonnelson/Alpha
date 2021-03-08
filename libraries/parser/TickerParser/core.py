@@ -34,8 +34,8 @@ class TickerParser(object):
 		return None
 
 	@staticmethod
-	def find_exchange(raw, platform):
-		return TickerParser.execute_parser_request(b"find_exchange", (raw, platform))
+	def find_exchange(raw, platform, bias):
+		return TickerParser.execute_parser_request(b"find_exchange", (raw, platform, bias))
 
 	@staticmethod
 	def process_known_tickers(ticker, exchange, platform, defaults, bias):

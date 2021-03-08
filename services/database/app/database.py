@@ -69,9 +69,9 @@ class DatabaseHandler(object):
 				elif service == b"guild_fetch":
 					response = self.guildProperties.get(entityId.decode())
 				elif service == b"account_keys":
-					response = list(self.accountProperties.keys())
+					response = {account: properties.get("oauth", {}).get("discord", {}).get("userId") for account, properties in self.accountProperties.items()}
 				elif service == b"guild_keys":
-					response = list(self.guildProperties.keys())
+					response = {guildId: properties.get("settings", {}).get("setup", {}).get("connection") for guildId, properties in self.guildProperties.items()}
 				elif service == b"account_match":
 					response = self.accountIdMap.get(entityId.decode())
 				elif service == b"account_status":
@@ -116,9 +116,11 @@ class DatabaseHandler(object):
 						self.accountIdMap[userId] = accountId
 						self.accountIdMap[accountId] = userId
 				else:
+					userId = self.accountProperties[accountId]["oauth"]["discord"].get("userId")
+					if userId is not None:
+						self.accountIdMap.pop(self.accountIdMap.get(accountId))
+						self.accountIdMap.pop(accountId)
 					self.accountProperties.pop(accountId)
-					self.accountIdMap.pop(self.accountIdMap.get(accountId))
-					self.accountIdMap.pop(accountId)
 			self.serviceStatus[0] = True
 
 		except Exception:

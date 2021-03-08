@@ -9,15 +9,6 @@ from . import supported
 
 
 class Exchange(object):
-	__nameMap = {
-		"ASE": "NYSE American",
-		"BATS": "Cboe BZX US Equities Exchange",
-		"NAS": "NASDAQ",
-		"NYS": "New York Stock Exchange",
-		"PSE": "NYSE Arca"
-	}
-
-
 	def __init__(self, id, name=None):
 		self.id = id
 		self.name = None
@@ -42,7 +33,7 @@ class Exchange(object):
 			self.isCrypto = True
 		else:
 			self.properties = ProprietaryExchange(id)
-			self.name = (Exchange.__nameMap[id] if id in Exchange.__nameMap else id.title()) if name is None else name.upper()
+			self.name = id.title() if name is None else name
 
 	def __hash__(self):
 		return hash(self.id)

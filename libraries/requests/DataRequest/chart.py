@@ -25,7 +25,7 @@ class ChartRequestHandler(object):
 
 		self.requests = {}
 		for platform in self.platforms:
-			self.requests[platform] = ChartRequest(tickerId, platform)
+			self.requests[platform] = ChartRequest(tickerId, platform, self.parserBias)
 
 	def parse_argument(self, argument):
 		for platform, request in self.requests.items():
@@ -602,13 +602,22 @@ class ChartRequest(object):
 			Parameter("heatmapIntensity", "medium heatmap intensity", ["medium", "med"], tradinglite=(0,62)),
 			Parameter("heatmapIntensity", "high heatmap intensity", ["high"], tradinglite=(0,39)),
 			Parameter("heatmapIntensity", "crazy heatmap intensity", ["crazy"], tradinglite=(0,16)),
-			Parameter("autoDeleteOverride", "autodelete", ["del", "delete", "autodelete"], tradinglite=True, tradingview=True, bookmap=True, gocharting=True, finviz=True, alternativeme=True, woobull=True, alphaflow=True)
+			Parameter("autoDeleteOverride", "autodelete", ["del", "delete", "autodelete"], tradinglite=True, tradingview=True, bookmap=True, gocharting=True, finviz=True, alternativeme=True, woobull=True, alphaflow=True),
+			Parameter("forcePlatform", "Force chart on TradingLite", ["tl", "tradinglite"], tradinglite=True),
+			Parameter("forcePlatform", "Force chart on TradingView", ["tv", "tradingview"], tradingview=True),
+			Parameter("forcePlatform", "Force chart on Bookmap", ["bm", "bookmap"], bookmap=True),
+			Parameter("forcePlatform", "Force chart on GoCharting", ["gc", "gocharting"], gocharting=True),
+			Parameter("forcePlatform", "Force chart on Finviz", ["fv", "finviz"], finviz=True),
+			Parameter("forcePlatform", "Force chart on Alternative.me", ["am", "alternativeme"], alternativeme=True),
+			Parameter("forcePlatform", "Force chart on Woobull", ["wb", "woobull"], woobull=True)
 		]
 	}
 
-	def __init__(self, tickerId, platform):
+	def __init__(self, tickerId, platform, bias):
 		self.ticker = Ticker(tickerId)
 		self.exchange = None
+		self.parserBias = bias
+
 		self.timeframes = []
 		self.indicators = []
 		self.chartStyle = []
@@ -626,6 +635,7 @@ class ChartRequest(object):
 
 		self.errors = []
 		self.errorIsFatal = False
+		self.shouldFail = False
 
 		self.__defaultParameters = {
 			"Alternative.me": {
@@ -705,6 +715,8 @@ class ChartRequest(object):
 			if updatedTicker is not None:
 				self.ticker.parts[i] = updatedTicker
 				if len(self.ticker.parts) == 1: self.exchange = updatedExchange
+			else:
+				self.shouldFail = True
 		self.ticker.update_ticker_id()
 
 		for trigger in self.specialTickerTriggers:
@@ -785,7 +797,7 @@ class ChartRequest(object):
 		return "`{}` range is not supported on {}.".format(argument, self.platform), False
 
 	def add_exchange(self, argument):
-		exchangeSupported, parsedExchange = TickerParser.find_exchange(argument, self.platform)
+		exchangeSupported, parsedExchange = TickerParser.find_exchange(argument, self.platform, self.parserBias)
 		if parsedExchange is not None and not self.hasExchange:
 			if not exchangeSupported:
 				outputMessage = "`{}` exchange is not supported by {}.".format(parsedExchange.name, self.platform)
@@ -886,28 +898,28 @@ class ChartRequest(object):
 		elif argument in ["longs", "long", "l"]:
 			if self.platform == "TradingView" and not self.ticker.id.endswith(("LONGS", "SHORTS")):
 				self.specialTickerTriggers.append("longs")
-				if not self.hasExchange: self.exchange = TickerParser.find_exchange("bitfinex", self.platform)[1]
+				if not self.hasExchange: self.exchange = TickerParser.find_exchange("bitfinex", self.platform, self.parserBias)[1]
 				if noVolume not in self.chartStyle: self.chartStyle.append(noVolume)
 				return None, True
 			return "Bitfinex longs charts are only available on TradingView.", False
 		elif argument in ["shorts", "short", "s"]:
 			if self.platform == "TradingView" and not self.ticker.id.endswith(("LONGS", "SHORTS")):
 				self.specialTickerTriggers.append("shorts")
-				if not self.hasExchange: self.exchange = TickerParser.find_exchange("bitfinex", self.platform)[1]
+				if not self.hasExchange: self.exchange = TickerParser.find_exchange("bitfinex", self.platform, self.parserBias)[1]
 				if noVolume not in self.chartStyle: self.chartStyle.append(noVolume)
 				return None, True
 			return "Bitfinex shorts charts are only available on TradingView.", False
 		elif argument in ["longs/shorts", "l/s", "ls"]:
 			if self.platform == "TradingView" and len(self.ticker.parts) == 1:
 				self.specialTickerTriggers.append("ls")
-				if not self.hasExchange: self.exchange = TickerParser.find_exchange("bitfinex", self.platform)[1]
+				if not self.hasExchange: self.exchange = TickerParser.find_exchange("bitfinex", self.platform, self.parserBias)[1]
 				if noVolume not in self.chartStyle: self.chartStyle.append(noVolume)
 				return None, True
 			return "Bitfinex longs/shorts charts are only available on TradingView.", False
 		elif argument in ["shorts/longs", "s/l", "sl"]:
 			if self.platform == "TradingView" and len(self.ticker.parts) == 1:
 				self.specialTickerTriggers.append("sl")
-				if not self.hasExchange: self.exchange = TickerParser.find_exchange("bitfinex", self.platform)[1]
+				if not self.hasExchange: self.exchange = TickerParser.find_exchange("bitfinex", self.platform, self.parserBias)[1]
 				if noVolume not in self.chartStyle: self.chartStyle.append(noVolume)
 				return None, True
 			return "Bitfinex shorts/longs charts are only available on TradingView.", False

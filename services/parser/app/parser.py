@@ -13,13 +13,13 @@ import requests
 
 import ccxt
 from pycoingecko import CoinGeckoAPI
-from iexfinance.refdata import get_symbols
 from google.cloud import error_reporting
 
-from TickerParser import Ticker, Exchange, supported
+from TickerParser import Ticker, Exchange
 
 from assets import static_storage
 from helpers.utils import Utils
+from helpers import supported
 
 
 class TickerParserServer(object):
@@ -30,9 +30,7 @@ class TickerParserServer(object):
 	coinGeckoIndex = {}
 	iexcStocksIndex = {}
 	iexcForexIndex = {}
-	iexcOtcIndex = {}
 
-	exchangeRates = {}
 	coingeckoVsCurrencies = []
 	coingeckoFiatCurrencies = []
 
@@ -43,7 +41,15 @@ class TickerParserServer(object):
 
 		self.logging = error_reporting.Client()
 
-		TickerParserServer.refresh_parser_index()
+		TickerParserServer.refresh_coingecko_index()
+		processes = [
+			Thread(target=TickerParserServer.refresh_coingecko_exchange_rates),
+			Thread(target=TickerParserServer.refresh_ccxt_index),
+			Thread(target=TickerParserServer.refresh_iexc_index)
+		]
+		for p in processes: p.start()
+		for p in processes: p.join()
+
 		self.jobQueue = Thread(target=self.job_queue)
 		self.jobQueue.start()
 
@@ -66,8 +72,8 @@ class TickerParserServer(object):
 				request = pickle.loads(zlib.decompress(request))
 
 				if service == b"find_exchange":
-					(raw, platform) = request
-					response = TickerParserServer.find_exchange(raw, platform)
+					(raw, platform, bias) = request
+					response = TickerParserServer.find_exchange(raw, platform, bias)
 				elif service == b"process_known_tickers":
 					(ticker, exchange, platform, defaults, bias) = request
 					response = TickerParserServer.process_known_tickers(ticker, exchange, platform, defaults, bias)
@@ -109,22 +115,15 @@ class TickerParserServer(object):
 				timeframes = Utils.get_accepted_timeframes(t)
 
 				if "1h" in timeframes:
-					TickerParserServer.refresh_parser_index()
+					TickerParserServer.refresh_ccxt_index()
+				if "1D" in timeframes:
+					TickerParserServer.refresh_iexc_index()
+					TickerParserServer.refresh_coingecko_index()
+					TickerParserServer.refresh_coingecko_exchange_rates()
 
 			except Exception:
 				print(traceback.format_exc())
 				if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
-
-	@staticmethod
-	def refresh_parser_index():
-		TickerParserServer.refresh_coingecko_index()
-		processes = [
-			Thread(target=TickerParserServer.refresh_coingecko_exchange_rates),
-			Thread(target=TickerParserServer.refresh_ccxt_index),
-			Thread(target=TickerParserServer.refresh_iexc_index)
-		]
-		for p in processes: p.start()
-		for p in processes: p.join()
 
 	@staticmethod
 	def refresh_ccxt_index():
@@ -208,10 +207,8 @@ class TickerParserServer(object):
 			coingeckoVsCurrencies = TickerParserServer.coinGecko.get_supported_vs_currencies()
 			TickerParserServer.coingeckoVsCurrencies = [e.upper() for e in coingeckoVsCurrencies]
 			exchangeRates = TickerParserServer.coinGecko.get_exchange_rates()
-			for ticker in exchangeRates["rates"]:
-				TickerParserServer.exchangeRates[ticker.upper()] = exchangeRates["rates"][ticker]
-			for ticker in TickerParserServer.exchangeRates:
-				if TickerParserServer.exchangeRates[ticker.upper()]["type"] == "fiat":
+			for ticker, value in exchangeRates["rates"].items():
+				if value["type"] == "fiat":
 					TickerParserServer.coingeckoFiatCurrencies.append(ticker.upper())
 		except Exception:
 			print(traceback.format_exc())
@@ -219,13 +216,32 @@ class TickerParserServer(object):
 	@staticmethod
 	def refresh_iexc_index():
 		try:
-			stockSymbols = get_symbols(token=os.environ["IEXC_KEY"])
-			for index, stock in stockSymbols.iterrows():
-				if stock["exchange"] not in TickerParserServer.exchanges:
-					TickerParserServer.exchanges[stock["exchange"]] = Exchange(stock["exchange"])
-				tickerId = stock["symbol"] if stock["iexId"] is None else stock["iexId"]
-				TickerParserServer.iexcStocksIndex[stock["symbol"]] = {"id": tickerId, "name": stock["name"], "base": stock["symbol"], "quote": stock["currency"], "exchange": stock["exchange"]}
-				TickerParserServer.exchanges[stock["exchange"]].properties.symbols.append(stock["symbol"])
+			iexcExchanges = set()
+			exchanges = requests.get("https://cloud.iexapis.com/stable/ref-data/market/us/exchanges?token={}".format(os.environ["IEXC_KEY"])).json()
+			for exchange in exchanges:
+				if exchange["refId"] == "": continue
+				exchangeId = exchange["refId"].lower()
+				iexcExchanges.add(exchangeId)
+				TickerParserServer.exchanges[exchangeId] = Exchange(exchangeId, exchange["longName"])
+			
+			difference = set(iexcExchanges).symmetric_difference(supported.iexcExchanges)
+			newSupportedExchanges = []
+			unsupportedCryptoExchanges = []
+			for exchangeId in difference:
+				if exchangeId not in supported.iexcExchanges:
+					newSupportedExchanges.append(exchangeId)
+				else:
+					unsupportedCryptoExchanges.append(exchangeId)
+			if len(newSupportedExchanges) != 0: print("New supported IEXC exchanges: {}".format(newSupportedExchanges))
+			if len(unsupportedCryptoExchanges) != 0: print("New deprecated IEXC exchanges: {}".format(unsupportedCryptoExchanges))
+
+			for exchangeId in supported.traditionalExchanges["IEXC"]:
+				symbols = requests.get("https://cloud.iexapis.com/stable/ref-data/exchange/{}/symbols?token={}".format(exchangeId, os.environ["IEXC_KEY"])).json()
+				for symbol in symbols:
+					tickerId = symbol["symbol"]
+					if tickerId not in TickerParserServer.iexcStocksIndex:
+						TickerParserServer.iexcStocksIndex[tickerId] = {"id": tickerId, "name": symbol["name"], "base": tickerId, "quote": symbol["currency"], "exchange": exchangeId}
+					TickerParserServer.exchanges[exchangeId].properties.symbols.append(tickerId)
 			
 			forexSymbols = requests.get("https://cloud.iexapis.com/stable/ref-data/fx/symbols?token={}".format(os.environ["IEXC_KEY"])).json()
 			derivedCurrencies = set()
@@ -240,69 +256,96 @@ class TickerParserServer(object):
 					if fromCurrency != toCurrency and symbol not in TickerParserServer.iexcForexIndex:
 						TickerParserServer.iexcForexIndex[symbol] = {"id": symbol, "name": symbol, "base": fromCurrency, "quote": toCurrency, "reversed": False}
 
-			otcSymbols = requests.get("https://cloud.iexapis.com/stable/ref-data/otc/symbols?token={}".format(os.environ["IEXC_KEY"])).json()
-			for stock in otcSymbols:
-				if stock["exchange"] not in TickerParserServer.exchanges:
-					TickerParserServer.exchanges[stock["exchange"]] = Exchange(stock["exchange"])
-				tickerId = stock["symbol"] if stock["iexId"] is None else stock["iexId"]
-				TickerParserServer.iexcOtcIndex[stock["symbol"]] = {"id": tickerId, "name": stock["name"], "base": stock["symbol"], "quote": stock["currency"], "exchange": stock["exchange"]}
-
 		except Exception:
 			print(traceback.format_exc())
 
 	@staticmethod
-	def find_exchange(raw, platform):
-		if platform not in supported.cryptoExchanges: return None, None
+	def find_exchange(raw, platform, bias):
+		if platform not in supported.cryptoExchanges and platform not in supported.traditionalExchanges: return None, None
 		if raw in ["pro"]: return None, None
 
-		checked = []
 		shortcuts = {
-			"binance": ["bin", "bi", "b"],
-			"bitmex": ["bmx", "mex", "btmx", "bx"],
-			"binancefutures": ["binancef", "fbin", "binf", "bif", "bf"],
-			"coinbasepro": ["cbp", "coin", "base", "cb", "coinbase", "coinbasepro", "cbpro"],
-			"bitfinex2": ["bfx", "finex", "bf"],
-			"bittrex": ["btrx", "brx"],
-			"huobipro": ["hpro"],
-			"poloniex": ["po", "polo"],
-			"kraken": ["k", "kra"],
-			"gemini": ["ge", "gem"]
+			"crypto": {
+				"binance": ["bin", "bi", "b"],
+				"bitmex": ["bmx", "mex", "btmx", "bx"],
+				"binancefutures": ["binancef", "fbin", "binf", "bif", "bf"],
+				"coinbasepro": ["cbp", "coin", "base", "cb", "coinbase", "coinbasepro", "cbpro"],
+				"bitfinex2": ["bfx", "finex", "bf"],
+				"bittrex": ["btrx", "brx"],
+				"huobipro": ["hpro"],
+				"poloniex": ["po", "polo"],
+				"kraken": ["k", "kra"],
+				"gemini": ["ge", "gem"]
+			},
+			"traditional": {}
 		}
 
-		for id in supported.cryptoExchanges[platform]:
-			checked.append(id)
-
-			if id in shortcuts and raw in shortcuts[id]:
-				return True, TickerParserServer.exchanges[id]
-			if id in TickerParserServer.exchanges and TickerParserServer.exchanges[id].name is not None:
-				name = TickerParserServer.exchanges[id].name.split(" ")[0].lower()
-				nameNoSpaces = TickerParserServer.exchanges[id].name.replace(" ", "").lower()
-			else:
-				name, nameNoSpaces = id, id
-
-			if len(name) * 0.33 > len(raw): continue
-
-			if name.startswith(raw) or name.endswith(raw): return True, TickerParserServer.exchanges[id]
-			elif nameNoSpaces.startswith(raw) or nameNoSpaces.endswith(raw): return True, TickerParserServer.exchanges[id]
-			elif id.startswith(raw) or id.endswith(raw): return True, TickerParserServer.exchanges[id]
-
-		for platform in supported.cryptoExchanges:
-			if platform == platform: continue
-			for id in supported.cryptoExchanges[platform]:
-				if id in checked: continue
-				else: checked.append(id)
-
-				if id in shortcuts:
-					if raw in shortcuts[id]: return True, TickerParserServer.exchanges[id]
-				if id in TickerParserServer.exchanges and TickerParserServer.exchanges[id].name is not None:
-					name = TickerParserServer.exchanges[id].name.split(" ")[0].lower()
-					nameNoSpaces = TickerParserServer.exchanges[id].name.replace(" ", "").lower()
+		if bias == "crypto":
+			for exchangeId in supported.cryptoExchanges[platform]:
+				if exchangeId in shortcuts["crypto"] and raw in shortcuts["crypto"][exchangeId]:
+					return True, TickerParserServer.exchanges[exchangeId]
+				if exchangeId in TickerParserServer.exchanges and TickerParserServer.exchanges[exchangeId].name is not None:
+					name = TickerParserServer.exchanges[exchangeId].name.split(" ")[0].lower()
+					nameNoSpaces = TickerParserServer.exchanges[exchangeId].name.replace(" ", "").lower()
 				else:
-					name, nameNoSpaces = id, id
+					name, nameNoSpaces = exchangeId, exchangeId
 
-				if name.startswith(raw) or name.endswith(raw): return False, TickerParserServer.exchanges[id]
-				elif nameNoSpaces.startswith(raw) or nameNoSpaces.endswith(raw): return False, TickerParserServer.exchanges[id]
-				elif id.startswith(raw) or id.endswith(raw): return False, TickerParserServer.exchanges[id]
+				if len(name) * 0.33 > len(raw): continue
+
+				if name.startswith(raw) or name.endswith(raw):
+					return True, TickerParserServer.exchanges[exchangeId]
+				elif nameNoSpaces.startswith(raw) or nameNoSpaces.endswith(raw):
+					return True, TickerParserServer.exchanges[exchangeId]
+				elif exchangeId.startswith(raw) or exchangeId.endswith(raw):
+					return True, TickerParserServer.exchanges[exchangeId]
+
+			for platform in supported.cryptoExchanges:
+				for exchangeId in supported.cryptoExchanges[platform]:
+					if exchangeId in shortcuts["crypto"] and raw in shortcuts["crypto"][exchangeId]:
+						return False, TickerParserServer.exchanges[exchangeId]
+					if exchangeId in TickerParserServer.exchanges and TickerParserServer.exchanges[exchangeId].name is not None:
+						name = TickerParserServer.exchanges[exchangeId].name.split(" ")[0].lower()
+						nameNoSpaces = TickerParserServer.exchanges[exchangeId].name.replace(" ", "").lower()
+					else:
+						name, nameNoSpaces = exchangeId, exchangeId
+
+					if name.startswith(raw) or name.endswith(raw): return False, TickerParserServer.exchanges[exchangeId]
+					elif nameNoSpaces.startswith(raw) or nameNoSpaces.endswith(raw): return False, TickerParserServer.exchanges[exchangeId]
+					elif exchangeId.startswith(raw) or exchangeId.endswith(raw): return False, TickerParserServer.exchanges[exchangeId]
+
+		else:
+			for exchangeId in supported.traditionalExchanges[platform]:
+				if exchangeId in shortcuts["traditional"] and raw in shortcuts["traditional"][exchangeId]:
+					return True, TickerParserServer.exchanges[exchangeId]
+				if exchangeId in TickerParserServer.exchanges and TickerParserServer.exchanges[exchangeId].name is not None:
+					name = TickerParserServer.exchanges[exchangeId].name.split(" ")[0].lower()
+					nameNoSpaces = TickerParserServer.exchanges[exchangeId].name.replace(" ", "").lower()
+				else:
+					name, nameNoSpaces = exchangeId, exchangeId
+
+				if len(name) * 0.33 > len(raw): continue
+
+				if name.startswith(raw) or name.endswith(raw):
+					return True, TickerParserServer.exchanges[exchangeId]
+				elif nameNoSpaces.startswith(raw) or nameNoSpaces.endswith(raw):
+					return True, TickerParserServer.exchanges[exchangeId]
+				elif exchangeId.startswith(raw) or exchangeId.endswith(raw):
+					return True, TickerParserServer.exchanges[exchangeId]
+
+			for platform in supported.traditionalExchanges:
+				for exchangeId in supported.traditionalExchanges[platform]:
+					if exchangeId in shortcuts["traditional"] and raw in shortcuts["traditional"][exchangeId]:
+						return False, TickerParserServer.exchanges[exchangeId]
+					if exchangeId in TickerParserServer.exchanges and TickerParserServer.exchanges[exchangeId].name is not None:
+						name = TickerParserServer.exchanges[exchangeId].name.split(" ")[0].lower()
+						nameNoSpaces = TickerParserServer.exchanges[exchangeId].name.replace(" ", "").lower()
+					else:
+						name, nameNoSpaces = exchangeId, exchangeId
+
+					if name.startswith(raw) or name.endswith(raw): return False, TickerParserServer.exchanges[exchangeId]
+					elif nameNoSpaces.startswith(raw) or nameNoSpaces.endswith(raw): return False, TickerParserServer.exchanges[exchangeId]
+					elif exchangeId.startswith(raw) or exchangeId.endswith(raw): return False, TickerParserServer.exchanges[exchangeId]
+
 		return None, None
 
 	@staticmethod
@@ -355,30 +398,35 @@ class TickerParserServer(object):
 					(Ticker("BTCUSD", "XBTUSD", "BTC", "USD", "BTC/USD", hasParts=False, mcapRank=1), TickerParserServer.exchanges["bitmex"], ["XBT", "XBTUSD"])
 				]
 			}
-			parsedTicker, parsedExchange = None, None
 
-			if (platform in ["TradingView", "Bookmap", "GoCharting"] and bias == "crypto") or platform in ["TradingLite", "LLD", "CoinGecko", "CCXT", "Alpha Paper Trader", "Ichibot"]:
-				if platform in cryptoTickerOverrides:
-					for tickerOverride, exchangeOverride, triggers in cryptoTickerOverrides[platform]:
-						if ticker.id in triggers:
-							ticker = tickerOverride
-							if exchangeOverride is not None: exchange = exchangeOverride
-							break
-				
+			if platform in ["TradingLite", "Bookmap", "GoCharting", "LLD", "CoinGecko", "CCXT", "Alpha Paper Trader", "Ichibot"]:
+				bias = "crypto"
+			elif platform in ["IEXC", "Quandl"]:
+				bias = "traditional"
+
+			parsedTicker, parsedExchange = None, None
+			forceMatch = platform in ["LLD", "CoinGecko", "CCXT", "Alpha Paper Trader", "IEXC", "Quandl"]
+
+			if bias == "crypto":
+				for tickerOverride, exchangeOverride, triggers in cryptoTickerOverrides.get(platform, []):
+					if ticker.id in triggers:
+						ticker = tickerOverride
+						if exchangeOverride is not None: exchange = exchangeOverride
+						break
+
 				if platform == "CoinGecko" and defaults["exchange"] is None and exchange is None: parsedTicker, parsedExchange = TickerParserServer.find_coingecko_crypto_market(ticker)
 				else: parsedTicker, parsedExchange = TickerParserServer.find_ccxt_crypto_market(ticker, exchange, platform, defaults)
 			else:
-				if platform in tickerOverrides:
-					for tickerOverride, exchangeOverride, triggers in tickerOverrides[platform]:
-						if ticker.id in triggers:
-							ticker = tickerOverride
-							if exchangeOverride is not None: exchange = exchangeOverride
-							break
+				for tickerOverride, exchangeOverride, triggers in tickerOverrides.get(platform, []):
+					if ticker.id in triggers:
+						ticker = tickerOverride
+						if exchangeOverride is not None: exchange = exchangeOverride
+						break
 
-				if platform == "IEXC": parsedTicker, parsedExchange = TickerParserServer.find_iexc_market(ticker)
+				if platform == "IEXC": parsedTicker, parsedExchange = TickerParserServer.find_iexc_market(ticker, exchange)
 				elif platform == "Quandl": parsedTicker, parsedExchange = TickerParserServer.find_quandl_market(ticker)
 
-			if parsedTicker is not None: ticker, exchange = parsedTicker, parsedExchange
+			if forceMatch or parsedTicker is not None: ticker, exchange = parsedTicker, parsedExchange
 
 		return ticker, exchange
 
@@ -466,19 +514,23 @@ class TickerParserServer(object):
 		return None, None
 
 	@staticmethod
-	def find_iexc_market(ticker):
-		if ticker.id in TickerParserServer.iexcForexIndex:
+	def find_iexc_market(ticker, exchange):
+		if ticker.id in TickerParserServer.iexcForexIndex and exchange is None:
 			return Ticker(TickerParserServer.iexcForexIndex[ticker.id]["id"], TickerParserServer.iexcForexIndex[ticker.id]["name"], TickerParserServer.iexcForexIndex[ticker.id]["base"], TickerParserServer.iexcForexIndex[ticker.id]["quote"], "{}/{}".format(TickerParserServer.iexcForexIndex[ticker.id]["base"], TickerParserServer.iexcForexIndex[ticker.id]["quote"]), hasParts=False, isReversed=TickerParserServer.iexcForexIndex[ticker.id]["reversed"]), None
-		elif ticker.id in TickerParserServer.iexcStocksIndex:
-			return Ticker(ticker.id, TickerParserServer.iexcStocksIndex[ticker.id]["name"], ticker.id, TickerParserServer.iexcStocksIndex[ticker.id]["quote"], "{}/{}".format(ticker.id, TickerParserServer.iexcStocksIndex[ticker.id]["quote"]), hasParts=False), TickerParserServer.exchanges[TickerParserServer.iexcStocksIndex[ticker.id]["exchange"]]
-		elif ticker.id in TickerParserServer.iexcOtcIndex:
-			return Ticker(ticker.id, TickerParserServer.iexcOtcIndex[ticker.id]["name"], ticker.id, TickerParserServer.iexcOtcIndex[ticker.id]["quote"], "{}/{}".format(ticker.id, TickerParserServer.iexcOtcIndex[ticker.id]["quote"]), hasParts=False), TickerParserServer.exchanges[TickerParserServer.iexcOtcIndex[ticker.id]["exchange"]]
-		elif ticker.id.endswith("USD") and ticker.id[:-3] in TickerParserServer.iexcStocksIndex:
+		elif ticker.id in TickerParserServer.iexcStocksIndex and (exchange is None or ticker.id in exchange.properties.symbols):
+			if exchange is None:
+				exchange = TickerParserServer.exchanges[TickerParserServer.iexcStocksIndex[ticker.id]["exchange"]]
+			return Ticker(ticker.id, TickerParserServer.iexcStocksIndex[ticker.id]["name"], ticker.id, TickerParserServer.iexcStocksIndex[ticker.id]["quote"], "{}/{}".format(ticker.id, TickerParserServer.iexcStocksIndex[ticker.id]["quote"]), hasParts=False), exchange
+		elif ticker.id.endswith("USD") and ticker.id[:-3] in TickerParserServer.iexcStocksIndex and (exchange is None or ticker.id[:-3] in exchange.properties.symbols):
 			ticker.id = ticker.id[:-3]
-			return Ticker(ticker.id, TickerParserServer.iexcStocksIndex[ticker.id]["name"], ticker.id, TickerParserServer.iexcStocksIndex[ticker.id]["quote"], "{}/{}".format(ticker.id, TickerParserServer.iexcStocksIndex[ticker.id]["quote"]), hasParts=False), TickerParserServer.exchanges[TickerParserServer.iexcStocksIndex[ticker.id]["exchange"]]
-		elif ticker.id.startswith("USD") and ticker.id[3:] in TickerParserServer.iexcStocksIndex:
+			if exchange is None:
+				exchange = TickerParserServer.exchanges[TickerParserServer.iexcStocksIndex[ticker.id]["exchange"]]
+			return Ticker(ticker.id, TickerParserServer.iexcStocksIndex[ticker.id]["name"], ticker.id, TickerParserServer.iexcStocksIndex[ticker.id]["quote"], "{}/{}".format(ticker.id, TickerParserServer.iexcStocksIndex[ticker.id]["quote"]), hasParts=False), exchange
+		elif ticker.id.startswith("USD") and ticker.id[3:] in TickerParserServer.iexcStocksIndex and (exchange is None or ticker.id[:-3] in exchange.properties.symbols):
 			ticker.id = ticker.id[3:]
-			return Ticker(ticker.id, TickerParserServer.iexcStocksIndex[ticker.id]["name"], ticker.id, TickerParserServer.iexcStocksIndex[ticker.id]["quote"], "{}/{}".format(ticker.id, TickerParserServer.iexcStocksIndex[ticker.id]["quote"]), hasParts=False, isReversed=True), TickerParserServer.exchanges[TickerParserServer.iexcStocksIndex[ticker.id]["exchange"]]
+			if exchange is None:
+				exchange = TickerParserServer.exchanges[TickerParserServer.iexcStocksIndex[ticker.id]["exchange"]]
+			return Ticker(ticker.id, TickerParserServer.iexcStocksIndex[ticker.id]["name"], ticker.id, TickerParserServer.iexcStocksIndex[ticker.id]["quote"], "{}/{}".format(ticker.id, TickerParserServer.iexcStocksIndex[ticker.id]["quote"]), hasParts=False, isReversed=True), exchange
 
 		return None, None
 

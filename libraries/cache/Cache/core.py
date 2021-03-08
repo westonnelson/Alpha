@@ -35,10 +35,13 @@ class Cache(object):
 
 	def __loop(self):
 		while True:
-			sleep(1)
-			keysToRemove = []
-			for key, value in self.__times.items():
-				if value <= time() - self.ttl:
-					keysToRemove.append(key)
-			for key in keysToRemove:
-				self.pop(key)
+			try:
+				sleep(1)
+				keysToRemove = []
+				for key, value in self.__times.items():
+					if value <= time() - self.ttl:
+						keysToRemove.append(key)
+				for key in keysToRemove:
+					self.pop(key)
+			except:
+				pass

@@ -488,7 +488,7 @@ class Alpha(discord.AutoShardedClient):
 					elif noadsEnabled and isPro:
 						result = await client.http.request(discord.http.Route("GET", "/guilds/{}/preview".format(guild.id), guild_id=guild.id))
 						onlineCount = result["approximate_presence_count"]
-						if onlineCount == 0: continue
+						if onlineCount is None or onlineCount == 0: continue
 						database.document("discord/properties/guilds/{}".format(guild.id)).set({"addons": {"noads": {"count": onlineCount}}}, merge=True)
 						accountId = properties["addons"]["noads"]["connection"]
 						if accountId not in noadsAccountIds: noadsAccountIds.append(accountId)
@@ -761,6 +761,7 @@ class Alpha(discord.AutoShardedClient):
 								await onlineMessage.edit(embed=discord.Embed(title=":hourglass_flowing_sand: Alpha Bot: rebooting for updates", color=constants.colors["gray"]), suppress=False)
 						else:
 							print("[Status]: reboot message")
+						await message.delete()
 					elif command.startswith("del"):
 						if message.guild.me.guild_permissions.manage_messages:
 							parameters = messageRequest.content.split("del ", 1)
@@ -828,16 +829,11 @@ class Alpha(discord.AutoShardedClient):
 								totalWeight = messageRequest.get_limit()
 								break
 							else:
-								platform = None
-								if requestSlice.startswith("am "): platform, requestSlice = "Alternative.me", requestSlice[3:]
-								elif requestSlice.startswith("wc "): platform, requestSlice = "Woobull Charts", requestSlice[3:]
-								elif requestSlice.startswith("tl "): platform, requestSlice = "TradingLite", requestSlice[3:]
-								elif requestSlice.startswith("tv "): platform, requestSlice = "TradingView", requestSlice[3:]
-								elif requestSlice.startswith("bm "): platform, requestSlice = "Bookmap", requestSlice[3:]
-								elif requestSlice.startswith("gc "): platform, requestSlice = "GoCharting", requestSlice[3:]
-								elif requestSlice.startswith("fv "): platform, requestSlice = "Finviz", requestSlice[3:]
+								if requestSlice.startswith("am ") or requestSlice.startswith("wc ") or requestSlice.startswith("tl ") or requestSlice.startswith("tv ") or requestSlice.startswith("bm ") or requestSlice.startswith("gc ") or requestSlice.startswith("fv "):
+									await message.channel.send(embed=discord.Embed(title="We're deprecating the old platform override syntax. Use `c {} {}` from now on instead.".format(requestSlice[3:], requestSlice[:2]), color=constants.colors["gray"]))
+									return
 
-								chartMessages, weight = await self.chart(message, messageRequest, requestSlice, platform)
+								chartMessages, weight = await self.chart(message, messageRequest, requestSlice)
 								sentMessages += chartMessages
 								totalWeight += weight - 1
 
@@ -867,10 +863,7 @@ class Alpha(discord.AutoShardedClient):
 								totalWeight = messageRequest.get_limit()
 								break
 							else:
-								platform = None
-								if requestSlice.startswith("bb "): platform, requestSlice = "Alpha Flow", requestSlice[3:]
-
-								chartMessages, weight = await self.flow(message, messageRequest, requestSlice, platform)
+								chartMessages, weight = await self.flow(message, messageRequest, requestSlice)
 								sentMessages += chartMessages
 								totalWeight += weight - 1
 
@@ -900,12 +893,7 @@ class Alpha(discord.AutoShardedClient):
 								totalWeight = messageRequest.get_limit()
 								break
 							else:
-								platform = None
-								if requestSlice.startswith("bg "): platform, requestSlice = "Bitgur", requestSlice[3:]
-								elif requestSlice.startswith("fv "): platform, requestSlice = "Finviz", requestSlice[3:]
-
-								chartMessages, weight = await self.heatmap(message, messageRequest, requestSlice, platform)
-
+								chartMessages, weight = await self.heatmap(message, messageRequest, requestSlice)
 								sentMessages += chartMessages
 								totalWeight += weight - 1
 
@@ -935,10 +923,7 @@ class Alpha(discord.AutoShardedClient):
 								totalWeight = messageRequest.get_limit()
 								break
 							else:
-								platform = None
-								if requestSlice.startswith("cx "): platform, requestSlice = "CCXT", requestSlice[3:]
-
-								chartMessages, weight = await self.depth(message, messageRequest, requestSlice, platform)
+								chartMessages, weight = await self.depth(message, messageRequest, requestSlice)
 								sentMessages += chartMessages
 								totalWeight += weight - 1
 
@@ -970,13 +955,7 @@ class Alpha(discord.AutoShardedClient):
 								totalWeight = messageRequest.get_limit()
 								break
 							else:
-								platform = None
-								if requestSlice.startswith("am "): platform, requestSlice = "Alternative.me", requestSlice[3:]
-								elif requestSlice.startswith("cg "): platform, requestSlice = "CoinGecko", requestSlice[3:]
-								elif requestSlice.startswith("cm "): platform, requestSlice = "CCXT", requestSlice[3:]
-								elif requestSlice.startswith("tm "): platform, requestSlice = "IEXC", requestSlice[3:]
-
-								quoteMessages, weight = await self.alert(message, messageRequest, requestSlice, platform)
+								quoteMessages, weight = await self.alert(message, messageRequest, requestSlice)
 								sentMessages += quoteMessages
 								totalWeight += weight - 1
 
@@ -1006,13 +985,7 @@ class Alpha(discord.AutoShardedClient):
 								totalWeight = messageRequest.get_limit()
 								break
 							else:
-								platform = None
-								if requestSlice.startswith("am "): platform, requestSlice = "Alternative.me", requestSlice[3:]
-								elif requestSlice.startswith("cg "): platform, requestSlice = "CoinGecko", requestSlice[3:]
-								elif requestSlice.startswith("cm "): platform, requestSlice = "CCXT", requestSlice[3:]
-								elif requestSlice.startswith("tm "): platform, requestSlice = "IEXC", requestSlice[3:]
-
-								quoteMessages, weight = await self.price(message, messageRequest, requestSlice, platform)
+								quoteMessages, weight = await self.price(message, messageRequest, requestSlice)
 								sentMessages += quoteMessages
 								totalWeight += weight - 1
 
@@ -1042,12 +1015,7 @@ class Alpha(discord.AutoShardedClient):
 								totalWeight = messageRequest.get_limit()
 								break
 							else:
-								platform = None
-								if requestSlice.startswith("cg "): platform, requestSlice = "CoinGecko", requestSlice[3:]
-								elif requestSlice.startswith("cx "): platform, requestSlice = "CCXT", requestSlice[3:]
-								elif requestSlice.startswith("tm "): platform, requestSlice = "IEXC", requestSlice[3:]
-
-								await self.volume(message, messageRequest, requestSlice, platform)
+								await self.volume(message, messageRequest, requestSlice)
 						await self.add_tip_message(message, messageRequest, "v")
 
 						self.statistics["v"] += totalWeight
@@ -1487,12 +1455,12 @@ class Alpha(discord.AutoShardedClient):
 	# Charting
 	# -------------------------
 
-	async def chart(self, message, messageRequest, requestSlice, platform):
+	async def chart(self, message, messageRequest, requestSlice):
 		sentMessages = []
 		try:
 			arguments = requestSlice.split(" ")
 
-			outputMessage, request = Processor.process_chart_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platform=platform)
+			outputMessage, request = Processor.process_chart_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper())
 			if outputMessage is not None:
 				if not messageRequest.is_muted() and outputMessage != "":
 					embed = discord.Embed(title=outputMessage, description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/guide/alpha-bot/charts).", color=constants.colors["gray"])
@@ -1529,13 +1497,13 @@ class Alpha(discord.AutoShardedClient):
 			await self.unknown_error(message, messageRequest.authorId, report=True)
 		return (sentMessages, len(sentMessages))
 
-	async def flow(self, message, messageRequest, requestSlice, platform):
+	async def flow(self, message, messageRequest, requestSlice):
 		sentMessages = []
 		try:
 			arguments = requestSlice.split(" ")
 
 			if messageRequest.flow_available():
-				outputMessage, request = Processor.process_chart_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platform=platform, platformQueue=["Alpha Flow"])
+				outputMessage, request = Processor.process_chart_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platformQueue=["Alpha Flow"])
 				if outputMessage is not None:
 					if not messageRequest.is_muted() and messageRequest.is_registered() and outputMessage != "":
 						embed = discord.Embed(title=outputMessage, description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/guide/alpha-bot/flow).", color=constants.colors["gray"])
@@ -1587,12 +1555,12 @@ class Alpha(discord.AutoShardedClient):
 			await self.unknown_error(message, messageRequest.authorId, report=True)
 		return (sentMessages, len(sentMessages))
 
-	async def heatmap(self, message, messageRequest, requestSlice, platform):
+	async def heatmap(self, message, messageRequest, requestSlice):
 		sentMessages = []
 		try:
 			arguments = requestSlice.split(" ")
 
-			outputMessage, request = Processor.process_heatmap_arguments(messageRequest, arguments, platform=platform)
+			outputMessage, request = Processor.process_heatmap_arguments(messageRequest, arguments)
 			if outputMessage is not None:
 				if not messageRequest.is_muted() and outputMessage != "":
 					embed = discord.Embed(title=outputMessage, description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/guide/alpha-bot/heat-maps).", color=constants.colors["gray"])
@@ -1629,12 +1597,12 @@ class Alpha(discord.AutoShardedClient):
 			await self.unknown_error(message, messageRequest.authorId, report=True)
 		return (sentMessages, len(sentMessages))
 
-	async def depth(self, message, messageRequest, requestSlice, platform):
+	async def depth(self, message, messageRequest, requestSlice):
 		sentMessages = []
 		try:
 			arguments = requestSlice.split(" ")
 
-			outputMessage, request = Processor.process_quote_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platform=platform, platformQueue=["CCXT"])
+			outputMessage, request = Processor.process_quote_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platformQueue=["CCXT", "IEXC"])
 			if outputMessage is not None:
 				if not messageRequest.is_muted() and outputMessage != "":
 					embed = discord.Embed(title=outputMessage, description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/guide/alpha-bot/orderbook-visualizations).", color=constants.colors["gray"])
@@ -1673,7 +1641,7 @@ class Alpha(discord.AutoShardedClient):
 	# Quotes
 	# -------------------------
 
-	async def alert(self, message, messageRequest, requestSlice, platform):
+	async def alert(self, message, messageRequest, requestSlice):
 		sentMessages = []
 		try:
 			arguments = requestSlice.split(" ")
@@ -1682,7 +1650,7 @@ class Alpha(discord.AutoShardedClient):
 			if method in ["set", "create", "add"]:
 				if len(arguments) >= 2:
 					if messageRequest.price_alerts_available():
-						outputMessage, request = Processor.process_quote_arguments(messageRequest, arguments[2:], tickerId=arguments[1].upper(), platform=platform, isMarketAlert=True, excluded=["CoinGecko", "Quandl", "LLD"])
+						outputMessage, request = Processor.process_quote_arguments(messageRequest, arguments[2:], tickerId=arguments[1].upper(), isMarketAlert=True, excluded=["CoinGecko", "Quandl", "LLD"])
 						if outputMessage is not None:
 							if not messageRequest.is_muted() and messageRequest.is_registered() and outputMessage != "":
 								embed = discord.Embed(title=outputMessage, description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/guide/alpha-bot/price-alerts).", color=constants.colors["gray"])
@@ -1836,12 +1804,12 @@ class Alpha(discord.AutoShardedClient):
 			await self.unknown_error(message, messageRequest.authorId, report=True)
 		return (sentMessages, len(sentMessages))
 
-	async def price(self, message, messageRequest, requestSlice, platform):
+	async def price(self, message, messageRequest, requestSlice):
 		sentMessages = []
 		try:
 			arguments = requestSlice.split(" ")
 
-			outputMessage, request = Processor.process_quote_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platform=platform)
+			outputMessage, request = Processor.process_quote_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper())
 			if outputMessage is not None:
 				if not messageRequest.is_muted() and outputMessage != "":
 					embed = discord.Embed(title=outputMessage, description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/guide/alpha-bot/prices).", color=constants.colors["gray"])
@@ -1888,12 +1856,12 @@ class Alpha(discord.AutoShardedClient):
 			await self.unknown_error(message, messageRequest.authorId, report=True)
 		return (sentMessages, len(sentMessages))
 
-	async def volume(self, message, messageRequest, requestSlice, platform):
+	async def volume(self, message, messageRequest, requestSlice):
 		sentMessages = []
 		try:
 			arguments = requestSlice.split(" ")
 
-			outputMessage, request = Processor.process_quote_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platform=platform)
+			outputMessage, request = Processor.process_quote_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper())
 			if outputMessage is not None:
 				if not messageRequest.is_muted() and outputMessage != "":
 					embed = discord.Embed(title=outputMessage, description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/guide/alpha-bot/volume).", color=constants.colors["gray"])
@@ -1974,7 +1942,7 @@ class Alpha(discord.AutoShardedClient):
 		try:
 			arguments = requestSlice.split(" ")
 
-			outputMessage, request = Processor.process_detail_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platformQueue=["CoinGecko"])
+			outputMessage, request = Processor.process_detail_arguments(messageRequest, arguments[1:], tickerId=arguments[0].upper(), platformQueue=["CoinGecko", "IEXC"])
 			if outputMessage is not None:
 				if not messageRequest.is_muted() and outputMessage != "":
 					embed = discord.Embed(title=outputMessage, description="Detailed guide with examples is available on [our website](https://www.alphabotsystem.com/guide/alpha-bot/cryptocurrency-details).", color=constants.colors["gray"])
@@ -1997,46 +1965,53 @@ class Alpha(discord.AutoShardedClient):
 				request.set_current(platform=payload["platform"])
 				ticker = request.get_ticker()
 
-				embed = discord.Embed(title=payload["name"], description="Ranked {} by market cap".format("*unknown*" if payload["rank"] is None else "#{}".format(payload["rank"])), color=constants.colors["lime"])
+				embed = discord.Embed(title=payload["name"], description=payload["description"], color=constants.colors["lime"])
 				embed.set_thumbnail(url=payload["image"])
 
-				marketCap = "Market cap: no data"
-				totalVolume = ""
-				totalSupply = ""
-				circulatingSupply = ""
-				developerScore = ""
-				communityScore = ""
-				liquidityScore = ""
-				publicInterestScore = ""
+				assetFundementals = ""
+				assetInfo = ""
+				assetSupply = ""
+				assetScore = ""
 				if payload["marketcap"] is not None:
-					marketCap = "Market cap: {:,.0f} {}".format(payload["marketcap"], "USD")
+					assetFundementals += "\nMarket cap: {:,.0f} {}{}".format(payload["marketcap"], "USD", "" if payload["rank"] is None else " (ranked #{})".format(payload["rank"]))
 				if payload["volume"] is not None:
-					totalVolume = "\nTotal volume: {:,.0f} {}".format(payload["volume"], "USD")
-				if payload["supply"]["total"] is not None:
-					totalSupply = "\nTotal supply: {:,.0f} {}".format(payload["supply"]["total"], ticker.base)
-				if payload["supply"]["circulating"] is not None:
-					circulatingSupply = "\nCirculating supply: {:,.0f} {}".format(payload["supply"]["circulating"], ticker.base)
-				if payload["score"]["developer"] is not None:
-					developerScore = "\nDeveloper score: {:,.1f}/100".format(payload["score"]["developer"])
-				if payload["score"]["community"] is not None:
-					communityScore = "\nCommunity score: {:,.1f}/100".format(payload["score"]["community"])
-				if payload["score"]["liquidity"] is not None:
-					liquidityScore = "\nLiquidity score: {:,.1f}/100".format(payload["score"]["liquidity"])
-				if payload["score"]["public interest"] is not None:
-					publicInterestScore = "\nPublic interest: {:,.1f}".format(payload["score"]["public interest"])
+					assetFundementals += "\nTotal volume: {:,.0f} {}".format(payload["volume"], "USD")
+				if payload["industry"] is not None:
+					assetFundementals += "\nIndustry: {}".format(payload["industry"])
+				if payload["info"] is not None:
+					if payload["info"]["location"] is not None:
+						assetInfo += "\nLocation: {}".format(payload["info"]["location"])
+					if payload["info"]["employees"] is not None:
+						assetInfo += "\nEmployees: {}".format(payload["info"]["employees"])
+				if payload["supply"] is not None:
+					if payload["supply"]["total"] is not None:
+						assetSupply += "\nTotal supply: {:,.0f} {}".format(payload["supply"]["total"], ticker.base)
+					if payload["supply"]["circulating"] is not None:
+						assetSupply += "\nCirculating supply: {:,.0f} {}".format(payload["supply"]["circulating"], ticker.base)
+				if payload["score"] is not None:
+					if payload["score"]["developer"] is not None:
+						assetScore += "\nDeveloper score: {:,.1f}/100".format(payload["score"]["developer"])
+					if payload["score"]["community"] is not None:
+						assetScore += "\nCommunity score: {:,.1f}/100".format(payload["score"]["community"])
+					if payload["score"]["liquidity"] is not None:
+						assetScore += "\nLiquidity score: {:,.1f}/100".format(payload["score"]["liquidity"])
+					if payload["score"]["public interest"] is not None:
+						assetScore += "\nPublic interest: {:,.3f}".format(payload["score"]["public interest"])
+				detailsText = assetFundementals[1:] + assetInfo + assetSupply + assetScore
+				if detailsText != "":
+					embed.add_field(name="Details", value=detailsText, inline=False)
 
-				embed.add_field(name="Details", value=(marketCap + totalVolume + totalSupply + circulatingSupply + developerScore + communityScore + liquidityScore + publicInterestScore), inline=False)
-
-				formattedUsdPrice = "no data"
-				formattedUsdAth = ""
-				formattedUsdAtl = ""
+				currentUsdPrice = "No data"
+				assetPriceDetails = ""
 				if payload["price"]["current"] is not None:
-					formattedUsdPrice = ("${:,.%df}" % Utils.add_decimal_zeros(payload["price"]["current"])).format(payload["price"]["current"])
+					currentUsdPrice = ("${:,.%df}" % Utils.add_decimal_zeros(payload["price"]["current"])).format(payload["price"]["current"])
 				if payload["price"]["ath"] is not None:
-					formattedUsdAth = ("\nATH: ${:,.%df}" % Utils.add_decimal_zeros(payload["price"]["ath"])).format(payload["price"]["ath"])
+					assetPriceDetails += ("\nATH: ${:,.%df}" % Utils.add_decimal_zeros(payload["price"]["ath"])).format(payload["price"]["ath"])
 				if payload["price"]["atl"] is not None:
-					formattedUsdAtl = ("\nATL: ${:,.%df}" % Utils.add_decimal_zeros(payload["price"]["atl"])).format(payload["price"]["atl"])
-				embed.add_field(name="Price", value="__{}__{}{}".format(formattedUsdPrice, formattedUsdAth, formattedUsdAtl), inline=True)
+					assetPriceDetails += ("\nATL: ${:,.%df}" % Utils.add_decimal_zeros(payload["price"]["atl"])).format(payload["price"]["atl"])
+				if payload["price"]["per"] is not None:
+					assetPriceDetails += "\nPrice-to-earnings ratio: {:,.2f}".format(payload["price"]["per"])
+				embed.add_field(name="Price", value="__{}__{}".format(currentUsdPrice, assetPriceDetails), inline=True)
 
 				change24h = "Past day: no data"
 				change30d = ""
@@ -2069,7 +2044,7 @@ class Alpha(discord.AutoShardedClient):
 			method = arguments[0]
 
 			if method in ["alpha", "requests", "charts"]:
-				if messageRequest.flow_available():
+				if messageRequest.statistics_available():
 					response = []
 					async with message.channel.typing():
 						rawData = database.document("dataserver/statistics").get().to_dict()
@@ -2217,7 +2192,7 @@ class Alpha(discord.AutoShardedClient):
 			arguments = self.liveTrader.argument_cleanup(requestSlice).split(" ")
 			orderType = arguments[0]
 
-			if orderType in ["buy", "scaled-buy", "sell", "scaled-sell", "stop-buy", "stop-sell", "trailing-stop-buy", "trailing-stop-sell"] and 2 <= len(arguments) <= 8:
+			if orderType in ["buy", "scaled-buy", "sell", "scaled-sell", "stop-buy", "stop-sell"] and 2 <= len(arguments) <= 8:
 				if not messageRequest.is_registered():
 					embed = discord.Embed(title=":dart: You must have an Alpha Account connected to your Discord to execute live trades.", description="[Sign up for a free account on our website](https://www.alphabotsystem.com/sign-up). If you already signed up, [sign in](https://www.alphabotsystem.com/sign-in), and connect your account with your Discord profile on the overview page.", color=constants.colors["deep purple"])
 					embed.set_author(name="Live trading", icon_url=static_storage.icon)
@@ -2348,11 +2323,11 @@ class Alpha(discord.AutoShardedClient):
 						holdingAssets = set()
 						exchangeBaseCurrency = PaperTrader.baseCurrency[exchange.id]
 
-						for base in sorted(paper[exchange.id]["balance"].keys()):
+						for base in sorted(paper[exchange.id].keys()):
 							isFiat, _ = TickerParser.check_if_fiat(base)
 							ticker, _ = TickerParser.find_ccxt_crypto_market(Ticker(base), exchange, "CCXT", messageRequest.guildProperties["settings"]["charts"]["defaults"])
 
-							amount = paper[exchange.id]["balance"][base]["amount"]
+							amount = paper[exchange.id][base]["amount"]
 
 							balanceText = ""
 							valueText = "No conversion"
@@ -2433,7 +2408,7 @@ class Alpha(discord.AutoShardedClient):
 			await self.unknown_error(message, messageRequest.authorId, report=True)
 		return (sentMessages, len(sentMessages))
 
-	async def fetch_paper_orders(self, message, messageRequest, requestSlice, type):
+	async def fetch_paper_orders(self, message, messageRequest, requestSlice, mathod):
 		sentMessages = []
 		try:
 			arguments = requestSlice.split(" ")[1:]
@@ -2459,7 +2434,7 @@ class Alpha(discord.AutoShardedClient):
 				if exchange.id in supported.cryptoExchanges["Alpha Paper Trader"]:
 					paper = messageRequest.accountProperties["paperTrader"]
 
-					if type == "history":
+					if mathod == "history":
 						if exchange.id not in paper or len(paper[exchange.id]["history"]) == 0:
 							embed = discord.Embed(title="No paper trading history on {}".format(exchange.name), color=constants.colors["deep purple"])
 							embed.set_author(name="Alpha Paper Trader", icon_url=static_storage.icon)
@@ -2477,7 +2452,6 @@ class Alpha(discord.AutoShardedClient):
 								if order["orderType"] == "buy": side = "Bought"
 								elif order["orderType"] == "sell": side = "Sold"
 								elif order["orderType"].startswith("stop"): side = "Stop loss hit"
-								elif order["orderType"].startswith("trailing-stop"): side, quoteText = "Trailing stop hit", "%"
 								embed.add_field(name="{} {} {} at {} {}".format(side, order["amount"], ticker.base, order["price"], quoteText), value="{} ● id: {}".format(Utils.timestamp_to_date(order["timestamp"] / 1000), order["id"]), inline=False)
 
 							sentMessages.append(await message.channel.send(embed=embed))
@@ -2493,7 +2467,6 @@ class Alpha(discord.AutoShardedClient):
 
 								quoteText = ticker.quote
 								side = order["orderType"].replace("-", " ").capitalize()
-								if order["orderType"].startswith("trailing-stop"): quoteText = "%"
 
 								embed = discord.Embed(title="{} {} {} at {} {}".format(side, order["amount"], ticker.base, order["price"], quoteText), color=constants.colors["deep purple"])
 								embed.set_footer(text="Paper order {}/{} ● id: {}".format(i + 1, len(paper[exchange.id]["openOrders"]), order["id"]))
@@ -2522,7 +2495,7 @@ class Alpha(discord.AutoShardedClient):
 			arguments = self.paperTrader.argument_cleanup(requestSlice).split(" ")
 			orderType = arguments[0]
 
-			if orderType in ["buy", "sell", "stop-sell", "trailing-stop-sell"] and 2 <= len(arguments) <= 8:
+			if orderType in ["buy", "sell", "stop-sell"] and 2 <= len(arguments) <= 8:
 				outputMessage, request = Processor.process_trade_arguments(messageRequest, arguments[2:], tickerId=arguments[1].upper(), platformQueue=["Alpha Paper Trader"])
 				if outputMessage is not None:
 					if not messageRequest.is_muted() and messageRequest.is_registered() and outputMessage != "":

@@ -129,7 +129,8 @@ class CandleProcessor(object):
 			try:
 				stock = Stock(ticker.id, token=os.environ["IEXC_KEY"])
 				rawData = stock.get_quote().loc[ticker.id]
-				if rawData is None: return None, None
+				if ticker.quote is None and exchange is not None: return None, "Price for `{}` is only available on `{}`.".format(ticker.id, rawData["primaryExchange"])
+				if rawData is None or (rawData["latestPrice"] is None and rawData["delayedPrice"] is None): return None, None
 			except:
 				return None, None
 

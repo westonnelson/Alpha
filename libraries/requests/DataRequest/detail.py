@@ -24,7 +24,7 @@ class DetailRequestHandler(object):
 
 		self.requests = {}
 		for platform in self.platforms:
-			self.requests[platform] = DetailRequest(tickerId, platform)
+			self.requests[platform] = DetailRequest(tickerId, platform, self.parserBias)
 
 	def parse_argument(self, argument):
 		for platform, request in self.requests.items():
@@ -149,8 +149,10 @@ class DetailRequest(object):
 		]
 	}
 
-	def __init__(self, tickerId, platform):
+	def __init__(self, tickerId, platform, bias):
 		self.ticker = Ticker(tickerId)
+		self.parserBias = bias
+
 		self.filters = []
 
 		self.platform = platform
@@ -188,6 +190,8 @@ class DetailRequest(object):
 			if updatedTicker is not None:
 				self.ticker.parts[i] = updatedTicker
 				if not self.ticker.isAggregatedTicker: self.exchange = updatedExchange
+			else:
+				self.shouldFail = True
 		self.ticker.update_ticker_id()
 
 	def add_parameter(self, argument, type):

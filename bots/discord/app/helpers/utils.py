@@ -44,10 +44,10 @@ class Utils(object):
 		elif raw in ["c alt mcap"]: raw = "c total2 nv"
 		elif raw in ["hmap"]: raw = "hmap change"
 		elif raw in ["flow"]: raw = "flow options"
-		elif raw in ["p gindex", "p gi", "p findex", "p fi", "p fgindex", "p fgi", "p gfindex", "p gfi"]: raw = "p am fgi"
-		elif raw in ["c gindex", "c gi", "c findex", "c fi", "c fgindex", "c fgi", "c gfindex", "c gfi"]: raw = "c am fgi"
-		elif raw in ["c nvtr", "c nvt", "c nvt ratio", "c nvtratio"]: raw = "c wc nvt"
-		elif raw in ["c drbns", "c drbn", "c rbns", "c rbn", "c dribbon", "c difficultyribbon"]: raw = "c wc drbn"
+		elif raw in ["p gindex", "p gi", "p findex", "p fi", "p fgindex", "p fgi", "p gfindex", "p gfi"]: raw = "p fgi am"
+		elif raw in ["c gindex", "c gi", "c findex", "c fi", "c fgindex", "c fgi", "c gfindex", "c gfi"]: raw = "c fgi am"
+		elif raw in ["c nvtr", "c nvt", "c nvt ratio", "c nvtratio"]: raw = "c nvt wc"
+		elif raw in ["c drbns", "c drbn", "c rbns", "c rbn", "c dribbon", "c difficultyribbon"]: raw = "c drbn wc"
 		elif raw in ["p fut", "p futs", "p futures"]: raw = "p xbth21, xbtm21"
 
 		raw = raw.replace("line break", "break")
