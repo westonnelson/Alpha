@@ -35,7 +35,7 @@ class DatabaseConnector(object):
 		except: return False
 
 	async def keys(self, default={}):
-		try: response = await DatabaseConnector.execute_parser_request(bytes(self.mode + "_keys", encoding='utf8'), b"")
+		try: response = await DatabaseConnector.execute_parser_request(bytes(self.mode + "_keys", encoding='utf8'), b"", timeout=5.0)
 		except: return default
 
 		if response is None:

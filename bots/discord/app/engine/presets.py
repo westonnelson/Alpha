@@ -15,6 +15,8 @@ class Presets(object):
 				return settings, ("Invalid preset name", "Preset name cannot be `{}`.".format(add), "gray")
 			if add in constants.commandKeywords:
 				return settings, ("Invalid preset name", "A command prefix cannot be used as a preset name.", "gray")
+			if len(add) < 5:
+				return settings, ("Invalid preset name", "Preset name must be at least 5 characters long to prevent accidental triggers.", "gray")
 
 			if shortcut.startswith("alpha "):
 				return settings, ("Invalid preset shortcut", "Assistant functionality cannot be used in a preset.", "gray")

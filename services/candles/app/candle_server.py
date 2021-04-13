@@ -13,7 +13,7 @@ from iexfinance.stocks import Stock
 from google.cloud import error_reporting
 
 from Cache import Cache
-from TickerParser import TickerParser, Ticker, Exchange, supported
+from TickerParser import Exchange
 
 from helpers.utils import Utils
 
@@ -26,7 +26,7 @@ class CandleProcessor(object):
 		signal.signal(signal.SIGINT, self.exit_gracefully)
 		signal.signal(signal.SIGTERM, self.exit_gracefully)
 
-		self.logging = error_reporting.Client()
+		self.logging = error_reporting.Client(service="candle_server")
 		self.cache = Cache(ttl=30)
 
 		context = zmq.Context.instance()
@@ -46,7 +46,7 @@ class CandleProcessor(object):
 				response = None, None
 				origin, delimeter, clientId, service, request = self.socket.recv_multipart()
 				request = pickle.loads(zlib.decompress(request))
-				if request.timestamp + 30 < time.time(): continue
+				if request.timestamp + 60 < time.time(): continue
 
 				if service == b"candle":
 					response = self.request_candle(request)
@@ -91,10 +91,10 @@ class CandleProcessor(object):
 
 		try:
 			if exchange is None: return None, None
-			exchange = Exchange(exchange.id)
+			exchange = Exchange(exchange.id, "crypto")
 
 			try:
-				rawData = exchange.properties.fetch_ohlcv(ticker.symbol, timeframe="1m", limit=60)
+				rawData = exchange.properties.fetch_ohlcv(ticker.symbol, timeframe="1m", limit=3)
 				if len(rawData) == 0 or rawData[-1][4] is None or rawData[0][1] is None: return None, None
 			except:
 				return None, None
@@ -118,7 +118,7 @@ class CandleProcessor(object):
 			return payload, None
 		except Exception:
 			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception(user=ticker.id)
 			return None, None
 
 	def request_iexc_candles(self, request):
@@ -149,14 +149,14 @@ class CandleProcessor(object):
 				"title": ticker.name,
 				"baseTicker": "shares",
 				"quoteTicker": ticker.quote,
-				"sourceText": "provided by IEX Cloud ● {} on {}".format(rawData["latestSource"], rawData["primaryExchange"]),
+				"sourceText": "provided by IEX Cloud",
 				"platform": "IEXC",
 			}
 
 			return payload, None
 		except Exception:
 			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception(user=ticker.id)
 			return None, None
 
 if __name__ == "__main__":

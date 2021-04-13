@@ -19,6 +19,7 @@ class PriceRequestHandler(object):
 		
 		self.isDelayed = not isPro
 		self.isMarketAlert = kwargs.get("isMarketAlert", False)
+		self.isPaperTrade = kwargs.get("isPaperTrade", False)
 
 		self.currentPlatform = self.platforms[0]
 
@@ -35,6 +36,10 @@ class PriceRequestHandler(object):
 			# "" False - Successful parse and error
 
 			finalOutput = None
+
+			outputMessage, success = request.add_image_style(argument)
+			if outputMessage is not None: finalOutput = outputMessage
+			elif success is not None and success: continue
 
 			outputMessage, success = request.add_filters(argument)
 			if outputMessage is not None: finalOutput = outputMessage
@@ -117,30 +122,39 @@ class PriceRequestHandler(object):
 			if platform == "Alternative.me":
 				if request.ticker.id not in ["FGI"]:
 					request.set_error(None, isFatal=True)
-				if self.isMarketAlert:
-					if len(request.filters) > 1: request.set_error("Only one alert type can be specified at once.")
-					elif len(request.numericalParameters) > 1: request.set_error("Only one alert trigger level can be specified at once.")
-					elif len(request.numericalParameters) == 0: request.set_error("Alert trigger level was not provided.")
-				else:
-					if len(request.numericalParameters) > 0: request.set_error("Only Alpha Price Alerts accept numerical parameters.".format(request.ticker.id), isFatal=True)
+				if len(request.numericalParameters) > 0: request.set_error("Only Alpha Price Alerts accept numerical parameters.".format(request.ticker.id), isFatal=True)
+				if self.find_parameter_in_list_for("public", request.filters, platform) != "":
+					request.set_error("`Public Trigger` parameter is only supported by Price Alerts.")
+				if self.find_parameter_in_list_for("isAmountPercent", request.filters, platform) != "":
+					request.set_error("`Percentage Amount` parameter is only supported by Alpha Paper Trader.")
+				if self.find_parameter_in_list_for("isPricePercent", request.filters, platform) != "":
+					request.set_error("`Percentage Price` parameter is only supported by Alpha Paper Trader.")
+				if self.find_parameter_in_list_for("isLimitOrder", request.filters, platform) != "":
+					request.set_error("`Limit Order` parameter is only supported by Alpha Paper Trader.")
 			elif platform == "LLD":
 				if request.ticker.id in ["MCAP"] and request.exchange is not None:
 					request.set_error(None, isFatal=True)
-				if self.isMarketAlert:
-					if len(request.filters) > 1: request.set_error("Only one alert type can be specified at once.")
-					elif len(request.numericalParameters) > 1: request.set_error("Only one alert trigger level can be specified at once.")
-					elif len(request.numericalParameters) == 0: request.set_error("Alert trigger level was not provided.")
-				else:
-					if len(request.numericalParameters) > 0: request.set_error("Only Alpha Price Alerts accept numerical parameters.".format(request.ticker.id), isFatal=True)
+				if len(request.numericalParameters) > 0: request.set_error("Only Alpha Price Alerts accept numerical parameters.".format(request.ticker.id), isFatal=True)
+				if self.find_parameter_in_list_for("public", request.filters, platform) != "":
+					request.set_error("`Public Trigger` parameter is only supported by Price Alerts.")
+				if self.find_parameter_in_list_for("isAmountPercent", request.filters, platform) != "":
+					request.set_error("`Percentage Amount` parameter is only supported by Alpha Paper Trader.")
+				if self.find_parameter_in_list_for("isPricePercent", request.filters, platform) != "":
+					request.set_error("`Percentage Price` parameter is only supported by Alpha Paper Trader.")
+				if self.find_parameter_in_list_for("isLimitOrder", request.filters, platform) != "":
+					request.set_error("`Limit Order` parameter is only supported by Alpha Paper Trader.")
 			elif platform == "CoinGecko":
 				if request.exchange is not None or (self.get_ticker_for("CCXT") is not None and self.get_ticker_for("CCXT").is_ranked_higher(request.ticker)):
 					request.set_error(None, isFatal=True)
-				if self.isMarketAlert:
-					if len(request.filters) > 1: request.set_error("Only one alert type can be specified at once.")
-					elif len(request.numericalParameters) > 1: request.set_error("Only one alert trigger level can be specified at once.")
-					elif len(request.numericalParameters) == 0: request.set_error("Alert trigger level was not provided.")
-				else:
-					if len(request.numericalParameters) > 0: request.set_error("Only Alpha Price Alerts accept numerical parameters.".format(request.ticker.id), isFatal=True)
+				if len(request.numericalParameters) > 0: request.set_error("Only Alpha Price Alerts accept numerical parameters.".format(request.ticker.id), isFatal=True)
+				if self.find_parameter_in_list_for("public", request.filters, platform) != "":
+					request.set_error("`Public Trigger` parameter is only supported by Price Alerts.")
+				if self.find_parameter_in_list_for("isAmountPercent", request.filters, platform) != "":
+					request.set_error("`Percentage Amount` parameter is only supported by Alpha Paper Trader.")
+				if self.find_parameter_in_list_for("isPricePercent", request.filters, platform) != "":
+					request.set_error("`Percentage Price` parameter is only supported by Alpha Paper Trader.")
+				if self.find_parameter_in_list_for("isLimitOrder", request.filters, platform) != "":
+					request.set_error("`Limit Order` parameter is only supported by Alpha Paper Trader.")
 			elif platform == "CCXT":
 				if request.exchange is None:
 					request.set_error("Requested price for `{}` is not available.".format(request.ticker.id), isFatal=True)
@@ -148,22 +162,73 @@ class PriceRequestHandler(object):
 					if len(request.filters) > 1: request.set_error("Only one alert type can be specified at once.")
 					elif len(request.numericalParameters) > 1: request.set_error("Only one alert trigger level can be specified at once.")
 					elif len(request.numericalParameters) == 0: request.set_error("Alert trigger level was not provided.")
+					if self.find_parameter_in_list_for("isAmountPercent", request.filters, platform) != "":
+						request.set_error("`Percentage Amount` parameter is only supported by Alpha Paper Trader.")
+					if self.find_parameter_in_list_for("isPricePercent", request.filters, platform) != "":
+						request.set_error("`Percentage Price` parameter is only supported by Alpha Paper Trader.")
+					if self.find_parameter_in_list_for("isLimitOrder", request.filters, platform) != "":
+						request.set_error("`Limit Order` parameter is only supported by Alpha Paper Trader.")
+				elif self.isPaperTrade:
+					if request.hasExchange:
+						request.set_error("Specifying an exchange is not supported. Omit the exchange from your request to execute the trade.", isFatal=True)
+					if request.ticker.id is not None:
+						if len(request.numericalParameters) == 0: request.set_error("Paper trade amount was not provided.")
+						elif len(request.numericalParameters) > 2: request.set_error("Too many numerical arguments provided.")
+					else:
+						if len(request.numericalParameters) != 0: request.set_error("Numerical arguments can't be used with this command.")
+					if self.find_parameter_in_list_for("public", request.filters, platform) != "":
+						request.set_error("`Public Trigger` parameter is only supported by Price Alerts.")
 				else:
 					if len(request.numericalParameters) > 0: request.set_error("Only Alpha Price Alerts accept numerical parameters.".format(request.ticker.id), isFatal=True)
+					if self.find_parameter_in_list_for("public", request.filters, platform) != "":
+						request.set_error("`Public Trigger` parameter is only supported by Price Alerts.")
+					if self.find_parameter_in_list_for("isAmountPercent", request.filters, platform) != "":
+						request.set_error("`Percentage Amount` parameter is only supported by Alpha Paper Trader.")
+					if self.find_parameter_in_list_for("isPricePercent", request.filters, platform) != "":
+						request.set_error("`Percentage Price` parameter is only supported by Alpha Paper Trader.")
+					if self.find_parameter_in_list_for("isLimitOrder", request.filters, platform) != "":
+						request.set_error("`Limit Order` parameter is only supported by Alpha Paper Trader.")
 			elif platform == "IEXC":
 				if self.isMarketAlert:
 					if len(request.filters) > 1: request.set_error("Only one alert type can be specified at once.")
 					elif len(request.numericalParameters) > 1: request.set_error("Only one alert trigger level can be specified at once.")
 					elif len(request.numericalParameters) == 0: request.set_error("Alert trigger level was not provided.")
+					if self.find_parameter_in_list_for("isAmountPercent", request.filters, platform) != "":
+						request.set_error("`Percentage Amount` parameter is only supported by Alpha Paper Trader.")
+					if self.find_parameter_in_list_for("isPricePercent", request.filters, platform) != "":
+						request.set_error("`Percentage Price` parameter is only supported by Alpha Paper Trader.")
+					if self.find_parameter_in_list_for("isLimitOrder", request.filters, platform) != "":
+						request.set_error("`Limit Order` parameter is only supported by Alpha Paper Trader.")
+				elif self.isPaperTrade:
+					if request.hasExchange:
+						request.set_error("Specifying an exchange is not supported. Omit the exchange from your request to execute the trade.", isFatal=True)
+					if request.ticker.id is not None:
+						if len(request.numericalParameters) == 0: request.set_error("Paper trade amount was not provided.")
+						elif len(request.numericalParameters) > 2: request.set_error("Too many numerical arguments provided.")
+					else:
+						if len(request.numericalParameters) != 0: request.set_error("Numerical arguments can't be used with this command.")
+					if self.find_parameter_in_list_for("public", request.filters, platform) != "":
+						request.set_error("`Public Trigger` parameter is only supported by Price Alerts.")
 				else:
 					if len(request.numericalParameters) > 0: request.set_error("Only Alpha Price Alerts accept numerical parameters.".format(request.ticker.id), isFatal=True)
+					if self.find_parameter_in_list_for("public", request.filters, platform) != "":
+						request.set_error("`Public Trigger` parameter is only supported by Price Alerts.")
+					if self.find_parameter_in_list_for("isAmountPercent", request.filters, platform) != "":
+						request.set_error("`Percentage Amount` parameter is only supported by Alpha Paper Trader.")
+					if self.find_parameter_in_list_for("isPricePercent", request.filters, platform) != "":
+						request.set_error("`Percentage Price` parameter is only supported by Alpha Paper Trader.")
+					if self.find_parameter_in_list_for("isLimitOrder", request.filters, platform) != "":
+						request.set_error("`Limit Order` parameter is only supported by Alpha Paper Trader.")
 			elif platform == "Quandl":
-				if self.isMarketAlert:
-					if len(request.filters) > 1: request.set_error("Only one alert type can be specified at once.")
-					elif len(request.numericalParameters) > 1: request.set_error("Only one alert trigger level can be specified at once.")
-					elif len(request.numericalParameters) == 0: request.set_error("Alert trigger level was not provided.")
-				else:
-					if len(request.numericalParameters) > 0: request.set_error("Only Alpha Price Alerts accept numerical parameters.".format(request.ticker.id), isFatal=True)
+				if len(request.numericalParameters) > 0: request.set_error("Only Alpha Price Alerts accept numerical parameters.".format(request.ticker.id), isFatal=True)
+				if self.find_parameter_in_list_for("public", request.filters, platform) != "":
+					request.set_error("`Public Trigger` parameter is only supported by Price Alerts.")
+				if self.find_parameter_in_list_for("isAmountPercent", request.filters, platform) != "":
+					request.set_error("`Percentage Amount` parameter is only supported by Alpha Paper Trader.")
+				if self.find_parameter_in_list_for("isPricePercent", request.filters, platform) != "":
+					request.set_error("`Percentage Price` parameter is only supported by Alpha Paper Trader.")
+				if self.find_parameter_in_list_for("isLimitOrder", request.filters, platform) != "":
+					request.set_error("`Limit Order` parameter is only supported by Alpha Paper Trader.")
 
 	def requires_pro(self):
 		return self.requests[self.currentPlatform].requiresPro
@@ -171,6 +236,8 @@ class PriceRequestHandler(object):
 	def get_ticker(self): return self.get_ticker_for(self.currentPlatform)
 
 	def get_exchange(self): return self.get_exchange_for(self.currentPlatform)
+
+	def get_image_style(self): return self.get_image_style_for(self.currentPlatform)
 
 	def get_filters(self): return self.get_filters_for(self.currentPlatform)
 
@@ -205,6 +272,10 @@ class PriceRequestHandler(object):
 
 		return exchange
 
+	def get_image_style_for(self, platform):
+		if platform not in self.requests: return []
+		return [e.parsed[platform] for e in self.requests[platform].imageStyle]
+
 	def get_filters_for(self, platform):
 		if platform not in self.requests: return []
 		return self.requests[platform].filters
@@ -227,14 +298,21 @@ class PriceRequestHandler(object):
 
 class PriceRequest(object):
 	requestParameters = {
+		"imageStyle": [
+			Parameter("force", "force", ["--force"], ccxt="force", iexc="force"),
+			Parameter("upload", "upload", ["--upload"], ccxt="upload", iexc="upload")
+		],
 		"filters": [
 			Parameter("lld", "funding", ["fun", "fund", "funding"], lld="funding"),
 			Parameter("lld", "open interest", ["oi", "openinterest", "ov", "openvalue"], lld="oi"),
 			Parameter("lld", "longs/shorts ratio", ["ls", "l/s", "longs/shorts", "long/short"], lld="ls"),
 			Parameter("lld", "shorts/longs ratio", ["sl", "s/l", "shorts/longs", "short/long"], lld="sl"),
 			Parameter("lld", "dominance", ["dom", "dominance"], lld="dom"),
+			Parameter("isAmountPercent", "percentage amount", ["%"], ccxt=True, iexc=True),
+			Parameter("isPricePercent", "percentage price", ["%"], ccxt=True, iexc=True),
+			Parameter("isLimitOrder", "limit order", ["@", "at"], ccxt=True, iexc=True),
 			Parameter("autoDeleteOverride", "autodelete", ["del", "delete", "autodelete"], coingecko=True, ccxt=True, iexc=True, quandl=True, alternativeme=True, lld=True),
-			Parameter("public", "public trigger", ["pub", "publish", "public"], coingecko=True, ccxt=True, iexc=True, quandl=True, alternativeme=True, lld=True),
+			Parameter("public", "public trigger", ["pub", "publish", "public"], ccxt=True, iexc=True),
 			Parameter("forcePlatform", "Force quote on CoinGecko", ["cg", "coingecko"], coingecko=True),
 			Parameter("forcePlatform", "Force quote on a crypto exchange", ["cx", "ccxt", "crypto"], ccxt=True),
 			Parameter("forcePlatform", "Force quote on a stock exchange", ["ix", "iexc", "stock"], iexc=True),
@@ -247,6 +325,7 @@ class PriceRequest(object):
 		self.exchange = None
 		self.parserBias = bias
 
+		self.imageStyle = []
 		self.filters = []
 		self.numericalParameters = []
 
@@ -261,21 +340,27 @@ class PriceRequest(object):
 
 		self.__defaultParameters = {
 			"Alternative.me": {
+				"imageStyle": [],
 				"filters": []
 			},
 			"LLD": {
+				"imageStyle": [],
 				"filters": []
 			},
 			"CoinGecko": {
+				"imageStyle": [],
 				"filters": []
 			},
 			"CCXT": {
+				"imageStyle": [],
 				"filters": []
 			},
 			"IEXC": {
+				"imageStyle": [],
 				"filters": []
 			},
 			"Quandl": {
+				"imageStyle": [],
 				"filters": []
 			}
 		}
@@ -326,6 +411,16 @@ class PriceRequest(object):
 				return outputMessage, False
 			self.exchange = parsedExchange
 			self.hasExchange = True
+			return None, True
+		return None, None
+
+	def add_image_style(self, argument):
+		imageStyleSupported, parsedImageStyle = self.add_parameter(argument, "imageStyle")
+		if parsedImageStyle is not None and not self.has_parameter(parsedImageStyle.id, self.imageStyle):
+			if not imageStyleSupported:
+				outputMessage = "`{}` chart style is not supported on {}.".format(parsedImageStyle.name.title(), self.platform)
+				return outputMessage, False
+			self.imageStyle.append(parsedImageStyle)
 			return None, True
 		return None, None
 

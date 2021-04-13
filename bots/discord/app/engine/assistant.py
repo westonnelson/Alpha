@@ -15,13 +15,14 @@ class Assistant(object):
 		assistantCredentials.refresh(http_request)
 		self.grpc_channel = google.auth.transport.grpc.secure_authorized_channel(assistantCredentials, http_request, "embeddedassistant.googleapis.com")
 
-	async def process_reply(self, raw, rawCaps, hasPermissions):
+	def process_reply(self, raw, rawCaps, hasPermissions):
 		command = raw.split(" ", 1)[1]
 		if command in ["help", "ping", "pro", "invite", "status", "vote", "referrals", "settings"] or not hasPermissions: return True, command
-		response = await self.funnyReplies(rawCaps.lower())
+		response = self.funnyReplies(rawCaps.lower())
 		if response is not None: return False, response
 		with AlphaAssistant("en-US", "nlc-bot-36685-nlc-bot-9w6rhy", "Alpha", False, self.grpc_channel, 60 * 3 + 5) as assistant:
-			response, response_html = assistant.assist(text_query=rawCaps)
+			try: response, response_html = assistant.assist(text_query=rawCaps)
+			except: return False, None
 
 			if response	is not None and response != "":
 				if "Here are some things you can ask for:" in response:
@@ -36,9 +37,9 @@ class Assistant(object):
 								return False, override
 					return False, " ".join(response.replace("Google Assistant", "Alpha").replace("Google", "Alpha").split())
 			else:
-				return False, "I can't help you with that."
+				return False, None
 
-	async def funnyReplies(self, raw):
+	def funnyReplies(self, raw):
 		for response in constants.funnyReplies:
 			for trigger in constants.funnyReplies[response]:
 				if raw == trigger: return response

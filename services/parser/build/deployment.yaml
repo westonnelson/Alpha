@@ -5,7 +5,7 @@ metadata:
   labels:
     app: parser
 spec:
-  replicas: 2
+  replicas: 3
   selector:
     matchLabels:
       app: parser
@@ -30,7 +30,7 @@ spec:
             readOnly: true
         resources:
           requests:
-            memory: "350Mi"
+            memory: "450Mi"
             cpu: "50m"
         ports:
           - containerPort: 6900

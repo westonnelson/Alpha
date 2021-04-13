@@ -7,6 +7,7 @@ import traceback
 from threading import Thread
 
 from google.cloud import firestore, error_reporting
+from helpers.utils import Utils
 
 database = firestore.Client()
 LRU_READY = "\x01"
@@ -26,7 +27,7 @@ class DatabaseHandler(object):
 
 		self.serviceStatus = [False, False, False]
 
-		self.logging = error_reporting.Client()
+		self.logging = error_reporting.Client(service="database")
 
 		self.accountsLink = database.collection("accounts").on_snapshot(self.update_account_properties)
 		self.discordPropertiesGuildsLink = database.collection("discord/properties/guilds").on_snapshot(self.update_guild_properties)
@@ -107,6 +108,9 @@ class DatabaseHandler(object):
 				properties = change.document.to_dict()
 				accountId = change.document.id
 
+				for key in properties["apiKeys"]:
+					properties["apiKeys"][key].pop("secret")
+
 				if change.type.name in ["ADDED", "MODIFIED"]:
 					self.accountProperties[accountId] = properties
 					userId = properties["oauth"]["discord"].get("userId")
@@ -125,7 +129,7 @@ class DatabaseHandler(object):
 
 		except Exception:
 			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception(user=accountId)
 
 	def update_unregistered_users_properties(self, settings, changes, timestamp):
 		"""Updates unregistered users properties
@@ -145,6 +149,14 @@ class DatabaseHandler(object):
 				properties = change.document.to_dict()
 				accountId = change.document.id
 
+				if "commandPresets" in properties and len(properties["commandPresets"]) == 0:
+					properties.pop("commandPresets")
+					database.document("discord/properties/users/{}".format(accountId)).set(properties)
+					continue
+				if not properties:
+					database.document("discord/properties/users/{}".format(accountId)).delete()
+					continue
+
 				if change.type.name in ["ADDED", "MODIFIED"]:
 					if properties.get("connection") is not None: continue
 					self.accountProperties[accountId] = properties
@@ -154,7 +166,7 @@ class DatabaseHandler(object):
 
 		except Exception:
 			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception(user=accountId)
 
 	def update_guild_properties(self, settings, changes, timestamp):
 		"""Updates Discord guild properties
@@ -172,15 +184,25 @@ class DatabaseHandler(object):
 		try:
 			for change in changes:
 				guildId = change.document.id
+				properties = change.document.to_dict()
+
+				if "addons" not in properties:
+					database.document("discord/properties/guilds/{}".format(guildId)).set(Utils.create_guild_settings(properties))
+					continue
+				if properties["addons"]["satellites"].get("count") is not None and not properties["addons"]["satellites"]["enabled"]:
+					properties["addons"]["satellites"].pop("count", None)
+					database.document("discord/properties/guilds/{}".format(guildId)).set(properties)
+					continue
+
 				if change.type.name in ["ADDED", "MODIFIED"]:
-					self.guildProperties[guildId] = change.document.to_dict()
+					self.guildProperties[guildId] = properties
 				else:
 					self.guildProperties.pop(guildId)
 			self.serviceStatus[2] = True
 
 		except Exception:
 			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception(user=guildId)
 
 
 if __name__ == "__main__":

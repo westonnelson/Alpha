@@ -7,9 +7,9 @@ WORKDIR /usr/src/parser
 COPY ./services/parser/build/requirements.txt ./services/parser/entrypoint.sh ./
 RUN pip install -r ./requirements.txt
 
-COPY ./libraries ./libraries
-RUN pip install ./libraries/requests
-RUN pip install ./libraries/parser
+RUN mkdir ./dependencies
+COPY ./libraries/parser ./dependencies/parser
+RUN pip install ./dependencies/parser
 
 # Copy source code
 COPY ./services/parser/app ./app

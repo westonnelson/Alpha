@@ -50,8 +50,8 @@ class TickerParser(object):
 		return TickerParser.execute_parser_request(b"find_coingecko_crypto_market", (ticker))
 
 	@staticmethod
-	def find_iexc_market(ticker):
-		return TickerParser.execute_parser_request(b"find_iexc_market", (ticker))
+	def find_iexc_market(ticker, exchange):
+		return TickerParser.execute_parser_request(b"find_iexc_market", (ticker, exchange))
 
 	@staticmethod
 	def find_quandl_market(ticker):
@@ -68,3 +68,11 @@ class TickerParser(object):
 	@staticmethod
 	def get_listings(ticker):
 		return TickerParser.execute_parser_request(b"get_listings", (ticker))
+
+	@staticmethod
+	def get_formatted_price(exchange, symbol, price):
+		return TickerParser.execute_parser_request(b"get_formatted_price", (exchange, symbol, price))
+
+	@staticmethod
+	def get_formatted_amount(exchange, symbol, price):
+		return TickerParser.execute_parser_request(b"get_formatted_amount", (exchange, symbol, price))

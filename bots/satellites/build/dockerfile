@@ -7,11 +7,15 @@ WORKDIR /usr/src/satellites
 COPY ./bots/satellites/build/requirements.txt ./bots/satellites/entrypoint.sh ./
 RUN pip install -r ./requirements.txt
 
-COPY ./libraries ./libraries
-RUN pip install ./libraries/parser
-RUN pip install ./libraries/database
-RUN pip install ./libraries/processor
-RUN pip install ./libraries/requests
+RUN mkdir ./dependencies
+COPY ./libraries/database ./dependencies/database
+RUN pip install ./dependencies/database
+COPY ./libraries/processor ./dependencies/processor
+RUN pip install ./dependencies/processor
+COPY ./libraries/parser ./dependencies/parser
+RUN pip install ./dependencies/parser
+COPY ./libraries/requests ./dependencies/requests
+RUN pip install ./dependencies/requests
 
 # Copy source code
 COPY ./bots/satellites/app ./app

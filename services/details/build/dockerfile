@@ -7,10 +7,13 @@ WORKDIR /usr/src/detail-server
 COPY ./services/details/build/requirements.txt ./services/details/entrypoint.sh ./
 RUN pip install -r ./requirements.txt
 
-COPY ./libraries ./libraries
-RUN pip install ./libraries/requests
-RUN pip install ./libraries/parser
-RUN pip install ./libraries/cache
+RUN mkdir ./dependencies
+COPY ./libraries/cache ./dependencies/cache
+RUN pip install ./dependencies/cache
+COPY ./libraries/parser ./dependencies/parser
+RUN pip install ./dependencies/parser
+COPY ./libraries/requests ./dependencies/requests
+RUN pip install ./dependencies/requests
 
 # Copy source code
 COPY ./services/details/app ./app

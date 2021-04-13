@@ -27,7 +27,7 @@ from helpers.utils import Utils
 database = firestore.Client()
 
 
-class Alpha(discord.Client):
+class Alpha(discord.AutoShardedClient):
 	isBotReady = False
 	clientId = None
 	clientName = None
@@ -50,8 +50,8 @@ class Alpha(discord.Client):
 		"""
 
 		Processor.clientId = b"discord_satellite"
-		self.logging = error_reporting.Client()
-		self.timeOffset = randint(0, 30)
+		self.logging = error_reporting.Client(service="satellites")
+		self.timeOffset = randint(0, 120)
 
 		self.priceText = None
 
@@ -75,7 +75,7 @@ class Alpha(discord.Client):
 			currentSelectedId = self.clientId
 			tasks = database.collection("dataserver/configuration/satellites").get()
 			assignments = {doc.id: doc.to_dict() for doc in tasks}
-			
+
 			if self.clientId is None or assignments[self.clientId]["uuid"] != self.clientName:
 				for clientId in assignments:
 					if currentSelectedId is None or assignments[clientId]["ping"] < assignments[currentSelectedId]["ping"]:
@@ -96,7 +96,7 @@ class Alpha(discord.Client):
 				self.platform, self.exchange, self.tickerId = assignments[self.clientId]["task"]
 				self.isFree = self.tickerId in ["BTCUSD", "ETHUSD"] and self.platform == "CoinGecko"
 				print("[Shutdown]: Task missmatch, shutting down")
-				raise KeyboardInterrupt
+				os._exit(1)
 
 		except Exception:
 			print(traceback.format_exc())
@@ -141,7 +141,7 @@ class Alpha(discord.Client):
 				timeframes = Utils.get_accepted_timeframes(t)
 
 				isPremium = self.tickerId in ["EURUSD", "GBPUSD", "AUDJPY", "AUDUSD", "EURJPY", "GBPJPY", "NZDJPY", "NZDUSD", "CADUSD", "JPYUSD", "ZARUSD"]
-				refreshRate = "5m" if len(client.guilds) > 1 and (not isPremium or len(client.guilds) > 15) else "15m"
+				refreshRate = "5m" if len(client.guilds) > 1 and (not isPremium or len(client.guilds) > 15) else "1H"
 
 				if "1m" in timeframes:
 					self.get_assigned_id()
@@ -155,31 +155,34 @@ class Alpha(discord.Client):
 						if os.environ["PRODUCTION_MODE"]: self.logging.report(outputMessage)
 						continue
 
-					try: payload, quoteText = await Processor.execute_data_server_request("quote", request, timeout=30)
+					try: payload, quoteText = await Processor.execute_data_server_request("quote", request)
 					except: continue
-					if payload is None or payload["quotePrice"] is None:
+					if payload is None or "quotePrice" not in payload:
 						print("Requested price for `{}` is not available".format(request.get_ticker().name) if quoteText is None else quoteText)
 						continue
 
 					self.priceText = "{} {}".format(payload["quotePrice"], payload["quoteTicker"])
-					changeText = "" if payload["change"] is None else "{:+.2f} % | ".format(payload["change"])
+					changeText = "" if "change" not in payload else "{:+.2f} % | ".format(payload["change"])
 					tickerText = "{} | ".format(request.get_ticker().id) if request.get_exchange() is None else "{} on {} | ".format(request.get_ticker().id, request.get_exchange().name)
 					statusText = "{}{}alphabotsystem.com".format(changeText, tickerText)
-					status = discord.Status.online if payload["change"] is None or payload["change"] >= 0 else discord.Status.dnd
+					status = discord.Status.online if payload.get("change", 0) >= 0 else discord.Status.dnd
 
 					for guild in client.guilds:
 						properties = await self.guildProperties.get(guild.id)
-						if properties is None:
+						if properties is None or not guild.me.guild_permissions.change_nickname:
 							continue
 						elif not self.isFree and not properties["addons"]["satellites"]["enabled"]:
-							try: await guild.me.edit(nick="Disabled")
-							except: continue
+							if guild.me.nick != "Disabled":
+								try: await guild.me.edit(nick="Disabled")
+								except: pass
 						elif self.isFree or properties["addons"]["satellites"]["connection"] is not None:
-							try: await guild.me.edit(nick=self.priceText)
-							except: continue
+							if guild.me.nick != self.priceText:
+								try: await guild.me.edit(nick=self.priceText)
+								except: pass
 						else:
-							try: await guild.me.edit(nick="Alpha Pro required")
-							except: continue
+							if guild.me.nick != "Alpha Pro required":
+								try: await guild.me.edit(nick="Alpha Pro required")
+								except: pass
 
 					try: await client.change_presence(status=status, activity=discord.Activity(type=discord.ActivityType.watching, name=statusText))
 					except: pass
@@ -196,7 +199,7 @@ class Alpha(discord.Client):
 
 def handle_exit():
 	print("\n[Shutdown]: closing tasks")
-	client.loop.run_until_complete(client.logout())
+	client.loop.run_until_complete(client.close())
 	for t in asyncio.all_tasks(loop=client.loop):
 		if t.done():
 			try: t.exception()
@@ -232,7 +235,8 @@ if __name__ == "__main__":
 			handle_exit()
 			client.loop.close()
 			break
-		except:
+		except Exception:
+			print(traceback.format_exc())
 			handle_exit()
 
 		client = Alpha(loop=client.loop, intents=intents, status=discord.Status.idle, activity=None)

@@ -6,18 +6,6 @@ import colorsys
 
 class Utils(object):
 	@staticmethod
-	def format_price(exchange, symbol, price):
-		precision = 8 if (exchange.markets[symbol]["precision"]["price"] is None if "price" in exchange.markets[symbol]["precision"] else True) else exchange.markets[symbol]["precision"]["price"]
-		price = float(decimal_to_precision(price, rounding_mode=ROUND, precision=precision, counting_mode=exchange.precisionMode, padding_mode=PAD_WITH_ZERO))
-		return ("{:,.%df}" % Utils.num_of_decimal_places(exchange, price, precision)).format(price)
-
-	@staticmethod
-	def format_amount(exchange, symbol, amount):
-		precision = exchange.markets[symbol]["precision"]["amount"]
-		amount = float(decimal_to_precision(amount, rounding_mode=TRUNCATE, precision=precision, counting_mode=exchange.precisionMode, padding_mode=NO_PADDING))
-		return ("{:,.%df}" % Utils.num_of_decimal_places(exchange, amount, precision)).format(amount)
-
-	@staticmethod
 	def num_of_decimal_places(exchange, price, precision):
 		if exchange.id in ["bitmex", "ftx"]:
 			s = str(precision)
@@ -49,6 +37,9 @@ class Utils(object):
 		elif raw in ["c nvtr", "c nvt", "c nvt ratio", "c nvtratio"]: raw = "c nvt wc"
 		elif raw in ["c drbns", "c drbn", "c rbns", "c rbn", "c dribbon", "c difficultyribbon"]: raw = "c drbn wc"
 		elif raw in ["p fut", "p futs", "p futures"]: raw = "p xbth21, xbtm21"
+		elif raw in ["x ichi b", "x ichibot b"]: raw = "x ichibot binancefutures"
+		elif raw in ["x ichi s", "x ichibot s"]: raw = "x ichibot binance"
+		elif raw in ["x ichi f", "x ichibot f"]: raw = "x ichibot ftx"
 
 		raw = raw.replace("line break", "break")
 

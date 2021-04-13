@@ -269,7 +269,8 @@ class HeatmapRequest(object):
 
 		],
 		"imageStyle": [
-			Parameter("force", "force", ["--force"], bitgur="force")
+			Parameter("force", "force", ["--force"], finviz="force", bitgur="force"),
+			Parameter("upload", "upload", ["--upload"], finviz="upload", bitgur="upload")
 		],
 		"filters": [
 			Parameter("style", "year to date performance", ["ytd"], finviz="&st=ytd"),
@@ -285,7 +286,7 @@ class HeatmapRequest(object):
 			Parameter("style", "analysts recomendation", ["analysts", "recomendation", "recom", "rec", "ar"], finviz="&st=rec"),
 			Parameter("style", "earnings day performance", ["earnings", "day", "performance", "edp", "earnperf", "edperf"], finviz="&st=earnperf"),
 			Parameter("style", "earnings date", ["earnings", "earn", "date", "performance", "ep", "earndate", "edate", "eperf"], finviz="&st=earndate"),
-			Parameter("heatmap", "change", ["change"], bitgur="coins/"),
+			Parameter("heatmap", "change", ["change"], bitgur="coins/", finviz=""),
 			Parameter("heatmap", "volatility", ["volatility", "vol", "v"], bitgur="volatility/"),
 			Parameter("heatmap", "exchanges", ["exchanges", "exchange", "exc", "e"], bitgur="exchanges/"),
 			Parameter("heatmap", "trend", ["trend", "tre", "t"], bitgur="trend/"),
@@ -321,7 +322,9 @@ class HeatmapRequest(object):
 			Parameter("category", "software", ["software"], bitgur="software"),
 			Parameter("category", "supply and logistics", ["supply", "logistics"], bitgur="supply_and_logistics"),
 			Parameter("category", "trading and investing", ["trading", "investing"], bitgur="trading_and_investing"),
-			Parameter("autoDeleteOverride", "autodelete", ["del", "delete", "autodelete"], finviz=True, bitgur=True)
+			Parameter("autoDeleteOverride", "autodelete", ["del", "delete", "autodelete"], finviz=True, bitgur=True),
+			Parameter("forcePlatform", "Force heatmap on Finviz", ["fv", "finviz"], finviz=True),
+			Parameter("forcePlatform", "Force chart on Woobull", ["bg", "bitgur"], bitgur=True)
 		]
 	}
 

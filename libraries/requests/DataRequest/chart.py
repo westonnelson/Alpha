@@ -590,11 +590,11 @@ class ChartRequest(object):
 			Parameter("theme", "light theme", ["light", "white"], tradinglite="light", finviz="light"),
 			Parameter("theme", "dark theme", ["dark", "black"], tradinglite="dark", finviz="dark"),
 			Parameter("log", "log", ["log", "logarithmic"], tradingview="log"),
-			Parameter("eh", "extended hours", ["eh", "extended"], tradingview="eh"),
 			Parameter("wide", "wide", ["wide"], tradinglite="wide", tradingview="wide", bookmap="wide", gocharting="wide"),
 			Parameter("link", "link", ["link"], tradinglite="link", tradingview="link", bookmap="link", gocharting="link", finviz="link"),
 			Parameter("flowlist", "list", ["list", "old", "legacy"], alphaflow="flowlist"),
-			Parameter("force", "force", ["--force"], tradinglite="force", tradingview="force", bookmap="force", gocharting="force", finviz="force", alternativeme="force", woobull="force", alphaflow="force")
+			Parameter("force", "force", ["--force"], tradinglite="force", tradingview="force", bookmap="force", gocharting="force", finviz="force", alternativeme="force", woobull="force", alphaflow="force"),
+			Parameter("upload", "upload", ["--upload"], tradinglite="upload", tradingview="upload", bookmap="upload", gocharting="upload", finviz="upload", alternativeme="upload", woobull="upload", alphaflow="upload")
 		],
 		"filters": [
 			Parameter("heatmapIntensity", "whales heatmap intensity", ["whale", "whales"], tradinglite=(50,100)),

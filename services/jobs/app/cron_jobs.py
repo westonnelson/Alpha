@@ -38,7 +38,7 @@ class CronJobs(object):
 		signal.signal(signal.SIGINT, self.exit_gracefully)
 		signal.signal(signal.SIGTERM, self.exit_gracefully)
 
-		self.logging = error_reporting.Client()
+		self.logging = error_reporting.Client(service="jobs")
 
 	def exit_gracefully(self):
 		print("[Startup]: Cron Job handler is exiting")
@@ -59,7 +59,7 @@ class CronJobs(object):
 				if "1m" in timeframes:
 					self.update_accounts()
 					self.process_price_alerts()
-					self.process_paper_limit_orders()
+					# self.process_paper_limit_orders()
 
 			except (KeyboardInterrupt, SystemExit): return
 			except Exception:
@@ -102,10 +102,10 @@ class CronJobs(object):
 
 		try:
 			users = database.document("details/marketAlerts").collections()
-			with ThreadPoolExecutor(max_workers=20) as pool:
+			with ThreadPoolExecutor(max_workers=4) as pool:
 				for user in users:
 					accountId = user.id
-					authorId = self.registeredAccounts.get(accountId, accountId)
+					authorId = accountId if accountId.isdigit() else self.registeredAccounts.get(accountId)
 					if authorId is None: continue
 					for alert in user.stream():
 						pool.submit(self.check_price_alert, authorId, accountId, alert.reference, alert.to_dict())
@@ -128,18 +128,11 @@ class CronJobs(object):
 			ticker = alertRequest.get_ticker()
 			exchange = alertRequest.get_exchange()
 
-			if alertRequest.currentPlatform == "CCXT":
-				levelText = Utils.format_price(exchange.properties, ticker.symbol, alert["level"])
-			elif alertRequest.currentPlatform == "IEXC" or alertRequest.currentPlatform == "Quandl":
-				levelText = "{:,.5f}".format(alert["level"])
-			else:
-				levelText = "{:,.0f}".format(alert["level"])
-
 			if alert["timestamp"] < time.time() - 86400 * 30.5 * 6:
 				if os.environ["PRODUCTION_MODE"]:
 					database.document("discord/properties/messages/{}".format(str(uuid.uuid4()))).set({
-						"title": "Price alert for {} ({}) at {} {} expired.".format(ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote),
-						"subtitle": "Alpha Price Alerts",
+						"title": "Price alert for {} ({}) at {} {} expired.".format(ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, alert.get("levelText", alert["level"]), ticker.quote),
+						"subtitle": "Price Alerts",
 						"description": "Price alerts automatically cancel after 6 months. If you'd like to keep your alert, you'll have to schedule it again.",
 						"color": 6765239,
 						"user": authorId,
@@ -148,7 +141,7 @@ class CronJobs(object):
 					reference.delete()
 
 				else:
-					print("{}: price alert for {} ({}) at {} {} expired".format(accountId, ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote))
+					print("{}: price alert for {} ({}) at {} {} expired".format(accountId, ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, alert.get("levelText", alert["level"]), ticker.quote))
 
 			else:
 				socket.send_multipart([b"cronjob", b"candle", zlib.compress(pickle.dumps(alertRequest, -1))])
@@ -170,9 +163,8 @@ class CronJobs(object):
 						if (candle[3] <= alert["level"] and alert["placement"] == "below") or (alert["level"] <= candle[2] and alert["placement"] == "above"):
 							if os.environ["PRODUCTION_MODE"]:
 								database.document("discord/properties/messages/{}".format(str(uuid.uuid4()))).set({
-									"title": "Price of {} ({}) hit {} {}.".format(ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote),
-									"subtitle": "Alpha Price Alerts",
-									"description": None,
+									"title": "Price of {} ({}) hit {} {}.".format(ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, alert.get("levelText", alert["level"]), ticker.quote),
+									"subtitle": "Price Alerts",
 									"color": 6765239,
 									"user": None if alertRequest.find_parameter_in_list("public", alertRequest.get_filters(), default=False) else authorId,
 									"channel": alert["channel"]
@@ -180,13 +172,13 @@ class CronJobs(object):
 								reference.delete()
 
 							else:
-								print("{}: price of {} ({}) hit {} {}".format(accountId, ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, levelText, ticker.quote))
+								print("{}: price of {} ({}) hit {} {}".format(accountId, ticker.base, alertRequest.currentPlatform if exchange is None else exchange.name, alert.get("levelText", alert["level"]), ticker.quote))
 							break
 
 		except (KeyboardInterrupt, SystemExit): pass
 		except Exception:
 			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception(user=f"{accountId}, {authorId}")
 		socket.close()
 
 
@@ -227,17 +219,10 @@ class CronJobs(object):
 			ticker = paperRequest.get_ticker()
 			exchange = paperRequest.get_exchange()
 
-			if paperRequest.currentPlatform == "CCXT":
-				levelText = Utils.format_price(exchange.properties, ticker.symbol, order["price"])
-			elif paperRequest.currentPlatform == "IEXC":
-				levelText = "{:,.5f}".format(order["price"])
-			else:
-				levelText = "{:,.0f}".format(order["price"])
-
 			if order["timestamp"] < time.time() - 86400 * 30.5 * 6:
 				if os.environ["PRODUCTION_MODE"]:
 					database.document("discord/properties/messages/{}".format(str(uuid.uuid4()))).set({
-						"title": "Paper {} order of {} {} on {} at {} {} expired.".format(order["orderType"].replace("-", " "), Utils.format_amount(exchange.properties, ticker.symbol, order["amount"]), ticker.base, paperRequest.currentPlatform if exchange is None else exchange.name, order["price"], ticker.quote),
+						"title": "Paper {} order of {} {} on {} at {} {} expired.".format(order["orderType"].replace("-", " "), order["amountText"], ticker.base, paperRequest.currentPlatform if exchange is None else exchange.name, order["price"], ticker.quote),
 						"subtitle": "Alpha Paper Trader",
 						"description": "Paper orders automatically cancel after 6 months. If you'd like to keep your order, you'll have to set it again.",
 						"color": 6765239,
@@ -247,7 +232,7 @@ class CronJobs(object):
 					reference.delete()
 
 				else:
-					print("{}: paper {} order of {} {} on {} at {} expired".format(order["orderType"].replace("-", " "), Utils.format_amount(exchange.properties, ticker.symbol, order["amount"]), ticker.base, paperRequest.currentPlatform if exchange is None else exchange.name, order["price"], ticker.quote))
+					print("{}: paper {} order of {} {} on {} at {} expired".format(order["orderType"].replace("-", " "), order["amountText"], ticker.base, paperRequest.currentPlatform if exchange is None else exchange.name, order["price"], ticker.quote))
 
 			else:
 				socket.send_multipart([b"cronjob", b"candle", zlib.compress(pickle.dumps(paperRequest, -1))])
@@ -281,7 +266,7 @@ class CronJobs(object):
 									if reduceOnly and ((order["orderType"] == "buy" and baseOrder["amount"] >= 0) or (order["orderType"] == "sell" and baseOrder["amount"] <= 0)):
 										order["status"] = "canceled"
 										database.document("discord/properties/messages/{}".format(str(uuid.uuid4()))).set({
-											"title": "Paper {} order of {} {} on {} at {} {} expired.".format(order["orderType"].replace("-", " "), Utils.format_amount(exchange.properties, ticker.symbol, execAmount), ticker.base, paperRequest.currentPlatform if exchange is None else exchange.name, order["price"], ticker.quote),
+											"title": "Paper {} order of {} {} on {} at {} {} expired.".format(order["orderType"].replace("-", " "), order["amountText"], ticker.base, paperRequest.currentPlatform if exchange is None else exchange.name, order["price"], ticker.quote),
 											"subtitle": "Alpha Paper Trader",
 											"description": "Paper orders automatically cancel after 6 months. If you'd like to keep your order, you'll have to set it again.",
 											"color": 6765239,
@@ -319,9 +304,8 @@ class CronJobs(object):
 										database.document("accounts/{}".format(accountId)).set({"paperTrader": {exchange.id: paper}}, merge=True)
 
 										database.document("discord/properties/messages/{}".format(str(uuid.uuid4()))).set({
-											"title": "Paper {} order of {} {} on {} at {} {} was successfully executed.".format(order["orderType"].replace("-", " "), Utils.format_amount(exchange.properties, ticker.symbol, execAmount), ticker.base, paperRequest.currentPlatform if exchange is None else exchange.name, order["price"], ticker.quote),
+											"title": "Paper {} order of {} {} on {} at {} {} was successfully executed.".format(order["orderType"].replace("-", " "), order["amountText"], ticker.base, paperRequest.currentPlatform if exchange is None else exchange.name, order["price"], ticker.quote),
 											"subtitle": "Alpha Paper Trader",
-											"description": None,
 											"color": 6765239,
 											"user": authorId,
 											"channel": order["channel"]
@@ -329,13 +313,13 @@ class CronJobs(object):
 										reference.delete()
 
 								else:
-									print("{}: paper {} order of {} {} on {} at {} {} was successfully executed".format(order["orderType"].replace("-", " "), Utils.format_amount(exchange.properties, ticker.symbol, order["amount"]), ticker.base, paperRequest.currentPlatform if exchange is None else exchange.name, order["price"], ticker.quote))
+									print("{}: paper {} order of {} {} on {} at {} {} was successfully executed".format(order["orderType"].replace("-", " "), order["amountText"], ticker.base, paperRequest.currentPlatform if exchange is None else exchange.name, order["price"], ticker.quote))
 							break
 
 		except (KeyboardInterrupt, SystemExit): pass
 		except Exception:
 			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception(user=f"{accountId}, {authorId}")
 
 
 	# -------------------------
@@ -346,7 +330,7 @@ class CronJobs(object):
 		if not os.environ["PRODUCTION_MODE"]: return
 		try:
 			processingTimestamp = time.time()
-			platforms = ["TradingLite", "TradingView", "Bookmap", "GoCharting", "Alpha Flow", "CoinGecko", "CCXT", "IEXC", "Quandl", "Alpha Paper Trader"]
+			platforms = ["TradingLite", "TradingView", "Bookmap", "GoCharting", "Alpha Flow", "CoinGecko", "CCXT", "IEXC", "Quandl"]
 			dataset1d = []
 			dataset8d = []
 			topTickerMap = {

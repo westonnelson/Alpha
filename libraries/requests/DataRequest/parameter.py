@@ -126,13 +126,12 @@ class DetailParameter(object):
 		return "{} [id: {}]".format(self.name, self.id)
 
 class TradeParameter(object):
-	def __init__(self, id, name, parsablePhrases, paper=None, ichibot=None, requiresPro=False):
+	def __init__(self, id, name, parsablePhrases, ichibot=None, requiresPro=False):
 		self.id = id
 		self.name = name
 		self.parsablePhrases = parsablePhrases
 		self.requiresPro = requiresPro
 		self.parsed = {
-			"Alpha Paper Trader": paper,
 			"Ichibot": ichibot
 		}
 

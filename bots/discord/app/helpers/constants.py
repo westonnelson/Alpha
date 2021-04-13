@@ -22,25 +22,6 @@ colors = {
 	"gray": 0x9E9E9E
 }
 
-supportMessages = {
-	"crypto": {
-		# "preset": [[":bulb: Get access to Command Presets for as little as $1.00 with Alpha Pro.", "Learn more about Alpha Pro and how to start your free trial on [our website](https://www.alphabotsystem.com/pro)."]],
-		# "alerts": [[":bulb: You can set price alerts right through Alpha with Alpha Pro. Setting one is as easy as running `alert set btc 24000` to be notified when Bitcoin price hits $24000.", "Learn more on [our website](https://www.alphabotsystem.com/pro/price-alerts)."]],
-		# "noads": [[":bulb: Servers can now request to remove Alpha's ads.", "Learn more about exact pricing on [our website](https://www.alphabotsystem.com/pro/pricing). Community admins can visit their [Communities Dashboard](https://www.alphabotsystem.com/communities) and remove ads in community settings."]],
-		"referral": [["Get a discount on crypto trading fees by signing up with our referral links!", "If you like Alpha Bot and would like to support it for free, sign up with on [Binance and get 10% back](https://www.binance.com/en/register?ref=PJF2KLMW), [BitMEX and get 10% back for 6 months](https://www.bitmex.com/register/cv1ZSO), [FTX and get 5% back](https://ftx.com/#a=Alpha), or [Deribit and get 10% back for 6 months](https://www.deribit.com/reg-8980.6502)."]]
-	},
-	"traditional": {
-		"preset": [[":bulb: Get access to Command Presets for as little as $1.00 with Alpha Pro.", "Learn more about Alpha Pro and how to start your free trial on [our website](https://www.alphabotsystem.com/pro)."]],
-		"flow": [[":bulb: Get access to BlackBox Stocks order flow data via Alpha Flow for as little as $15.00 with Alpha Pro.", "Learn more about Alpha Pro and how to start your free trial on [our website](https://www.alphabotsystem.com/pro)."]],
-		"alerts": [[":bulb: You can set price alerts right through Alpha with Alpha Pro. Setting one is as easy as running `alert set aapl 125` to be notified when Apple stock price hits $125.", "Learn more on [our website](https://www.alphabotsystem.com/pro/price-alerts)."]],
-		"noads": [[":bulb: Servers can now request to remove Alpha's ads.", "Learn more about exact pricing on [our website](https://www.alphabotsystem.com/pro/pricing). Community admins can visit their [Communities Dashboard](https://www.alphabotsystem.com/communities) and remove ads in community settings."]],
-	}
-}
-frequency = {
-	"crypto": 40,
-	"traditional": 20
-}
-
 messageOverrides = {
 	"I can't help you with that.": {
 		"Your public IP address is:",

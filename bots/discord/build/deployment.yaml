@@ -30,8 +30,8 @@ spec:
             readOnly: true
         resources:
           requests:
-            memory: "900Mi"
-            cpu: "300m"
+            memory: "1500Mi"
+            cpu: "500m"
             ephemeral-storage: "5000Ki"
         ports:
           - containerPort: 6910

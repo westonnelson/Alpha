@@ -1,6 +1,6 @@
 keys/
 services/images
-services/trades
+services/ichibot
 
 *.pyc
 *.log

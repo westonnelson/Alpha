@@ -22,12 +22,12 @@ class Processor(object):
 		"detail": "tcp://detail-server:6900",
 		"heatmap": "tcp://image-server:6900",
 		"quote": "tcp://quote-server:6900",
-		"trade": "tcp://trade-server:6900"
+		"ichibot": "tcp://ichibot-server:6900"
 	}
 	zmqContext = zmq.asyncio.Context.instance()
 
 	@staticmethod
-	async def execute_data_server_request(service, request, timeout=30):
+	async def execute_data_server_request(service, request, timeout=60, retries=3):
 		socket = Processor.zmqContext.socket(zmq.REQ)
 		payload, responseText = None, None
 		socket.connect(Processor.services[service])
@@ -35,6 +35,7 @@ class Processor(object):
 		poller = zmq.asyncio.Poller()
 		poller.register(socket, zmq.POLLIN)
 
+		request.timestamp = time.time()
 		await socket.send_multipart([Processor.clientId, bytes(service, encoding='utf8'), zlib.compress(pickle.dumps(request, -1))])
 		responses = await poller.poll(timeout * 1000)
 
@@ -46,7 +47,8 @@ class Processor(object):
 				payload = BytesIO(base64.decodebytes(payload))
 		else:
 			socket.close()
-			raise Exception("time out")
+			if retries == 1: raise Exception("time out")
+			else: payload, responseText = await Processor.execute_data_server_request(service, request, retries=retries-1)
 
 		return payload, responseText
 
@@ -225,23 +227,24 @@ class Processor(object):
 
 		payload = {
 			"quotePrice": "{:,.3f}".format(amount),
-			"quoteVolume": None,
 			"quoteConvertedPrice": "{:,.6f} {}".format(convertedValue, payload2["quoteTicker"]),
-			"quoteConvertedVolume": None,
-			"title": None,
 			"baseTicker": payload1["baseTicker"],
 			"quoteTicker": payload2["quoteTicker"],
-			"change": None,
-			"thumbnailUrl": None,
 			"messageColor":"deep purple",
 			"sourceText": "Alpha Currency Conversions",
 			"platform": "Alpha Currency Conversions",
 			"raw": {
 				"quotePrice": [convertedValue],
-				"quoteVolume": None,
 				"ticker": toBase,
-				"exchange": None,
 				"timestamp": time.time()
 			}
 		}
 		return payload, None
+
+	@staticmethod
+	def get_direct_ichibot_socket(identity):
+		socket = Processor.zmqContext.socket(zmq.DEALER)
+		socket.identity = identity.encode("ascii")
+		socket.connect(Processor.services["ichibot"])
+		socket.setsockopt(zmq.LINGER, 0)
+		return socket

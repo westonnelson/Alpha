@@ -21,9 +21,8 @@ from PIL import Image
 from matplotlib import pyplot as plt
 from matplotlib import ticker as tkr
 import matplotlib.transforms as mtransforms
-from google.cloud import firestore, error_reporting
+from google.cloud import firestore, storage, error_reporting
 
-from Cache import Cache
 from TickerParser import TickerParser, Ticker, Exchange, supported
 
 from assets import static_storage
@@ -32,6 +31,8 @@ from helpers import constants
 
 
 database = firestore.Client()
+storage_client = storage.Client()
+bucket = storage_client.get_bucket("nlc-bot-36685.appspot.com")
 
 plt.switch_backend("Agg")
 plt.ion()
@@ -54,9 +55,7 @@ class QuoteProcessor(object):
 		signal.signal(signal.SIGINT, self.exit_gracefully)
 		signal.signal(signal.SIGTERM, self.exit_gracefully)
 
-		self.logging = error_reporting.Client()
-		self.cache1 = Cache(ttl=5)
-		self.cache2 = Cache(ttl=5)
+		self.logging = error_reporting.Client(service="quote_server")
 
 		self.coinGecko = CoinGeckoAPI()
 		self.lastBitcoinQuote = {
@@ -90,7 +89,7 @@ class QuoteProcessor(object):
 				response = None, None
 				origin, delimeter, clientId, service, request = self.socket.recv_multipart()
 				request = pickle.loads(zlib.decompress(request))
-				if request.timestamp + 30 < time.time(): continue
+				if request.timestamp + 60 < time.time(): continue
 
 				if service == b"quote":
 					response = self.request_quote(request)
@@ -110,19 +109,13 @@ class QuoteProcessor(object):
 
 		for platform in request.platforms:
 			request.set_current(platform=platform)
-			hashCode = hash(request.requests[platform])
-			fromCache = False
 
-			if request.can_cache() and self.cache1.has(hashCode):
-				payload, updatedQuoteMessage = self.cache1.get(hashCode), None
-				fromCache = True
-			elif platform == "CCXT":
+			if platform == "CCXT":
 				payload, updatedQuoteMessage = self.request_ccxt_depth(request)
 			elif platform == "IEXC":
 				payload, updatedQuoteMessage = self.request_iexc_depth(request)
 
 			if payload is not None:
-				if request.can_cache() and not fromCache: self.cache1.set(hashCode, payload)
 				if request.authorId != 401328409499664394 and request.requests[platform].ticker.base is not None and request.authorId not in constants.satellites:
 					database.document("dataserver/statistics/{}/{}".format(platform, str(uuid.uuid4()))).set({
 						"timestamp": time.time(),
@@ -146,13 +139,8 @@ class QuoteProcessor(object):
 
 		for platform in request.platforms:
 			request.set_current(platform=platform)
-			hashCode = hash(request.requests[platform])
-			fromCache = False
 
-			if request.can_cache() and self.cache2.has(hashCode):
-				payload, updatedQuoteMessage = self.cache2.get(hashCode), None
-				fromCache = True
-			elif platform == "Alternative.me":
+			if platform == "Alternative.me":
 				payload, updatedQuoteMessage = self.request_fear_greed_index(request)
 			elif platform == "LLD":
 				payload, updatedQuoteMessage = self.request_lld_quote(request)
@@ -166,7 +154,6 @@ class QuoteProcessor(object):
 				pass
 
 			if payload is not None:
-				if request.can_cache() and not fromCache: self.cache2.set(hashCode, payload)
 				if request.authorId != 401328409499664394 and request.requests[platform].ticker.base is not None and request.authorId not in constants.satellites:
 					database.document("dataserver/statistics/{}/{}".format(platform, str(uuid.uuid4()))).set({
 						"timestamp": time.time(),
@@ -204,13 +191,11 @@ class QuoteProcessor(object):
 			if ticker.isReversed: priceChange = (1 / (priceChange / 100 + 1) - 1) * 100
 
 			payload = {
-				"quotePrice": ("{:,.%df}" % (4 if TickerParser.check_if_fiat(ticker.quote)[0] and not ticker.isReversed else 8)).format(price),
+				"quotePrice": str(price),
 				"quoteVolume": volume,
-				"quoteConvertedPrice": None if ticker.quote == "USD" else "≈ ${:,.6f}".format(rawData["market_data"]["current_price"]["usd"]),
-				"quoteConvertedVolume": None if ticker.quote == "USD" else "≈ ${:,.4f}".format(rawData["market_data"]["total_volume"]["usd"]),
 				"title": ticker.name,
-				"baseTicker": ticker.base if ticker.base.lower() in rawData["market_data"]["current_price"] else "BTC",
-				"quoteTicker": ticker.quote if ticker.quote.lower() in rawData["market_data"]["current_price"] else "BTC",
+				"baseTicker": ticker.base,
+				"quoteTicker": ticker.quote,
 				"change": priceChange,
 				"thumbnailUrl": TickerParser.get_coingecko_image(ticker.base),
 				"messageColor": "amber" if priceChange == 0 else ("green" if priceChange > 0 else "red"),
@@ -224,11 +209,15 @@ class QuoteProcessor(object):
 					"timestamp": time.time()
 				}
 			}
+			if ticker.quote != "USD":
+				payload["quoteConvertedPrice"] = "≈ ${:,.6f}".format(rawData["market_data"]["current_price"]["usd"])
+				payload["quoteConvertedVolume"] = "≈ ${:,.4f}".format(rawData["market_data"]["total_volume"]["usd"])
+
 			if ticker == Ticker("BTCUSD", "BTCUSD", "BTC", "USD", "BTC/USD", hasParts=False): self.lastBitcoinQuote = payload["raw"]
 			return payload, None
 		except Exception:
 			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception(user=ticker.id)
 			return None, None
 
 	def request_ccxt_quote(self, request):
@@ -237,7 +226,7 @@ class QuoteProcessor(object):
 
 		try:
 			if exchange is None: return None, None
-			exchange = Exchange(exchange.id)
+			exchange = Exchange(exchange.id, "crypto")
 
 			tf, limitTimestamp, candleOffset = Utils.get_highest_supported_timeframe(exchange.properties, datetime.datetime.now().astimezone(pytz.utc))
 			try:
@@ -252,10 +241,8 @@ class QuoteProcessor(object):
 			priceChange = 0 if tf == "1m" or price[1] == 0 else (price[0] / price[1]) * 100 - 100
 
 			payload = {
-				"quotePrice": "{:,.8f}".format(price[0]) if ticker.isReversed else Utils.format_price(exchange.properties, ticker.symbol, price[0]),
+				"quotePrice": "{:,.8f}".format(price[0]) if ticker.isReversed else TickerParser.get_formatted_price(exchange.id, ticker.symbol, price[0]),
 				"quoteVolume": volume,
-				"quoteConvertedPrice": "≈ ${:,.6f}".format(price[0] * self.lastBitcoinQuote["quotePrice"][0]) if ticker.quote == "BTC" else None,
-				"quoteConvertedVolume": "≈ ${:,.4f}".format(volume * self.lastBitcoinQuote["quotePrice"][0]) if ticker.quote == "BTC" else None,
 				"title": ticker.name,
 				"baseTicker": "USD" if ticker.base in QuoteProcessor.stableCoinTickers else ticker.base,
 				"quoteTicker": "USD" if ticker.quote in QuoteProcessor.stableCoinTickers else ticker.quote,
@@ -272,10 +259,14 @@ class QuoteProcessor(object):
 					"timestamp": time.time()
 				}
 			}
+			if ticker.quote == "BTC":
+				payload["quoteConvertedPrice"] = "≈ ${:,.6f}".format(price[0] * self.lastBitcoinQuote["quotePrice"][0])
+				payload["quoteConvertedVolume"] = "≈ ${:,.4f}".format(volume * self.lastBitcoinQuote["quotePrice"][0])
+
 			return payload, None
 		except Exception:
 			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception(user=ticker.id)
 			return None, None
 
 	def request_lld_quote(self, request):
@@ -285,14 +276,14 @@ class QuoteProcessor(object):
 		action = request.find_parameter_in_list("lld", filters)
 
 		try:
-			if exchange is not None: exchange = Exchange(exchange.id)
+			if exchange is not None: exchange = Exchange(exchange.id, "crypto")
 
 			if action == "funding":
 				if exchange.id in ["bitmex"]:
 					try: rawData = exchange.properties.public_get_instrument({"symbol": ticker.id})[0]
 					except: return None, "Requested funding data for `{}` is not available.".format(ticker.name)
 
-					if rawData["fundingTimestamp"] is None:
+					if rawData["fundingTimestamp"] is not None:
 						fundingDate = datetime.datetime.strptime(rawData["fundingTimestamp"], "%Y-%m-%dT%H:%M:00.000Z").replace(tzinfo=pytz.utc)
 					else:
 						fundingDate = datetime.datetime.now().replace(tzinfo=pytz.utc)
@@ -313,26 +304,21 @@ class QuoteProcessor(object):
 					minutesIndicative = "{:d} {}".format(minutes2 if hours2 > 0 or minutes2 > 0 else seconds2, "{}".format("minute" if minutes2 == 1 else "minutes") if hours2 > 0 or minutes2 > 0 else ("second" if seconds2 == 1 else "seconds"))
 					deltaIndicativeText = "{}{}".format(hoursIndicative, minutesIndicative)
 
-					fundingRate = rawData["fundingRate"] * 100
-					predictedFundingRate = rawData["indicativeFundingRate"] * 100
+					fundingRate = float(rawData["fundingRate"]) * 100
+					predictedFundingRate = float(rawData["indicativeFundingRate"]) * 100
 					averageFundingRate = (fundingRate + predictedFundingRate) / 2
 
 					payload = {
 						"quotePrice": "Funding Rate: {:+.4f} % *(in {})*\nPredicted Rate: {:+.4f} % *(in {})*".format(fundingRate, deltaFundingText, predictedFundingRate, deltaIndicativeText),
-						"quoteVolume": None,
-						"quoteConvertedPrice": None,
-						"quoteConvertedVolume": None,
 						"title": ticker.name,
 						"baseTicker": ticker.base,
 						"quoteTicker": ticker.quote,
-						"change": None,
 						"thumbnailUrl": TickerParser.get_coingecko_image(ticker.base),
 						"messageColor": "yellow" if averageFundingRate == 0.01 else ("light green" if averageFundingRate < 0.01 else "deep orange"),
 						"sourceText": "Contract details on {}".format(exchange.name),
 						"platform": "LLD",
 						"raw": {
 							"quotePrice": [fundingRate, predictedFundingRate],
-							"quoteVolume": None,
 							"ticker": ticker,
 							"exchange": exchange,
 							"timestamp": time.time()
@@ -346,21 +332,16 @@ class QuoteProcessor(object):
 					except: return None, "Requested open interest data for `{}` is not available.".format(ticker.name)
 
 					payload = {
-						"quotePrice": "Open interest: {:,.0f} {}\nOpen value: {:,.4f} XBT".format(rawData["openInterest"], "USD" if ticker.id == "XBTUSD" else "contracts", rawData["openValue"] / 100000000),
-						"quoteVolume": None,
-						"quoteConvertedPrice": None,
-						"quoteConvertedVolume": None,
+						"quotePrice": "Open interest: {:,.0f} {}\nOpen value: {:,.4f} XBT".format(float(rawData["openInterest"]), "USD" if ticker.id == "XBTUSD" else "contracts", float(rawData["openValue"]) / 100000000),
 						"title": ticker.name,
 						"baseTicker": ticker.base,
 						"quoteTicker": ticker.quote,
-						"change": None,
 						"thumbnailUrl": TickerParser.get_coingecko_image(ticker.base),
 						"messageColor": "deep purple",
 						"sourceText": "Contract details on {}".format(exchange.name),
 						"platform": "LLD",
 						"raw": {
-							"quotePrice": [rawData["openInterest"], rawData["openValue"] / 100000000],
-							"quoteVolume": None,
+							"quotePrice": [float(rawData["openInterest"]), float(rawData["openValue"]) / 100000000],
 							"ticker": ticker,
 							"exchange": exchange,
 							"timestamp": time.time()
@@ -379,20 +360,15 @@ class QuoteProcessor(object):
 
 					payload = {
 						"quotePrice": "{:.1f} % longs / {:.1f} % shorts".format(ratio, 100 - ratio),
-						"quoteVolume": None,
-						"quoteConvertedPrice": None,
-						"quoteConvertedVolume": None,
 						"title": "{} longs/shorts ratio".format(ticker.name),
 						"baseTicker": ticker.base,
 						"quoteTicker": ticker.quote,
-						"change": None,
 						"thumbnailUrl": TickerParser.get_coingecko_image(ticker.base),
 						"messageColor": "deep purple",
 						"sourceText": "Data on {}".format(exchange.name),
 						"platform": "LLD",
 						"raw": {
 							"quotePrice": [longs[1], shorts[1]],
-							"quoteVolume": None,
 							"ticker": ticker,
 							"exchange": exchange,
 							"timestamp": time.time()
@@ -411,20 +387,15 @@ class QuoteProcessor(object):
 
 					payload = {
 						"quotePrice": "{:.1f} % shorts / {:.1f} % longs".format(ratio, 100 - ratio),
-						"quoteVolume": None,
-						"quoteConvertedPrice": None,
-						"quoteConvertedVolume": None,
 						"title": "{} shorts/longs ratio".format(ticker.name),
 						"baseTicker": ticker.base,
 						"quoteTicker": ticker.quote,
-						"change": None,
 						"thumbnailUrl": TickerParser.get_coingecko_image(ticker.base),
 						"messageColor": "deep purple",
 						"sourceText": "Data on {}".format(exchange.name),
 						"platform": "LLD",
 						"raw": {
 							"quotePrice": [longs[1], shorts[1]],
-							"quoteVolume": None,
 							"ticker": ticker,
 							"exchange": exchange,
 							"timestamp": time.time()
@@ -440,22 +411,16 @@ class QuoteProcessor(object):
 
 				payload = {
 					"quotePrice": "{} dominance: {:,.2f} %".format(ticker.base, coinDominance),
-					"quoteVolume": None,
-					"quoteConvertedPrice": None,
-					"quoteConvertedVolume": None,
 					"title": "Market Dominance",
 					"baseTicker": ticker.base,
 					"quoteTicker": ticker.quote,
-					"change": None,
 					"thumbnailUrl": TickerParser.get_coingecko_image(ticker.base),
 					"messageColor": "deep purple",
 					"sourceText": "Market information from CoinGecko",
 					"platform": "LLD",
 					"raw": {
 						"quotePrice": coinDominance,
-						"quoteVolume": None,
 						"ticker": ticker,
-						"exchange": None,
 						"timestamp": time.time()
 					}
 				}
@@ -464,7 +429,7 @@ class QuoteProcessor(object):
 				return None, None
 		except Exception:
 			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception(user=ticker.id)
 			return None, None
 
 	def request_iexc_quote(self, request):
@@ -503,16 +468,14 @@ class QuoteProcessor(object):
 			price = float(latestPrice if "isUSMarketOpen" not in rawData or rawData["isUSMarketOpen"] or "extendedPrice" not in rawData or rawData["extendedPrice"] is None else rawData["extendedPrice"])
 			if ticker.isReversed: price = 1 / price
 			volume = float(rawData["latestVolume"])
-			priceChange = (1 / rawData["change"] if ticker.isReversed else rawData["change"]) / price * 100 if "change" in rawData and rawData["change"] is not None else 0
+			priceChange = (1 / rawData["change"] if ticker.isReversed and rawData["change"] != 0 else rawData["change"]) / price * 100 if "change" in rawData and rawData["change"] is not None else 0
 
 			payload = {
 				"quotePrice": "{:,.5f}".format(price) if ticker.isReversed else "{}".format(price),
 				"quoteVolume": volume,
-				"quoteConvertedPrice": None,
-				"quoteConvertedVolume": None,
 				"title": ticker.name,
 				"baseTicker": "contracts",
-				"quoteTicker": ticker.quote,
+				"quoteTicker": "USD" if ticker.quote is None else ticker.quote,
 				"change": priceChange,
 				"thumbnailUrl": coinThumbnail,
 				"messageColor": "amber" if priceChange == 0 else ("green" if priceChange > 0 else "red"),
@@ -529,7 +492,7 @@ class QuoteProcessor(object):
 			return payload, None
 		except Exception:
 			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception(user=ticker.id)
 			return None, None
 
 	def request_iexc_forex(self, request):
@@ -549,20 +512,15 @@ class QuoteProcessor(object):
 
 			payload = {
 				"quotePrice": "{:,.5f}".format(price),
-				"quoteVolume": None,
-				"quoteConvertedPrice": None,
-				"quoteConvertedVolume": None,
 				"title": ticker.name,
 				"baseTicker": ticker.base,
 				"quoteTicker": ticker.quote,
-				"change": None,
 				"thumbnailUrl": static_storage.icon,
 				"messageColor": "deep purple",
 				"sourceText": "provided by IEX Cloud",
 				"platform": "IEXC",
 				"raw": {
 					"quotePrice": [price],
-					"quoteVolume": None,
 					"ticker": ticker,
 					"exchange": exchange,
 					"timestamp": time.time()
@@ -571,7 +529,7 @@ class QuoteProcessor(object):
 			return payload, None
 		except Exception:
 			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception(user=ticker.id)
 			return None, None
 
 	def request_fear_greed_index(self, request):
@@ -582,38 +540,36 @@ class QuoteProcessor(object):
 
 			payload = {
 				"quotePrice": greedIndex,
-				"quoteVolume": None,
 				"quoteConvertedPrice": "≈ {}".format(r["data"][0]["value_classification"].lower()),
-				"quoteConvertedVolume": None,
 				"title": "Fear & Greed Index",
-				"baseTicker": None,
-				"quoteTicker": None,
 				"change": greedIndex - int(r["data"][1]["value"]),
 				"thumbnailUrl": static_storage.icon,
 				"messageColor": "deep purple",
 				"sourceText": "Data provided by Alternative.me",
 				"platform": "Alternative.me",
 				"raw": {
-					"quotePrice": greedIndex,
-					"quoteVolume": None,
+					"quotePrice": [greedIndex],
 					"ticker": request.get_ticker(),
-					"exchange": None,
 					"timestamp": time.time()
 				}
 			}
 			return payload, None
 		except Exception:
 			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception(user=ticker.id)
 			return None, None
 
 	def request_ccxt_depth(self, request):
 		ticker = request.get_ticker()
 		exchange = request.get_exchange()
 
+		imageStyle = request.get_image_style()
+		forceMode = "force" in imageStyle and request.authorId == 361916376069439490
+		uploadMode = "upload" in imageStyle and request.authorId == 361916376069439490
+
 		try:
 			if exchange is None: return None, None
-			exchange = Exchange(exchange.id)
+			exchange = Exchange(exchange.id, "crypto")
 
 			try:
 				depthData = exchange.properties.fetch_order_book(ticker.symbol)
@@ -624,16 +580,22 @@ class QuoteProcessor(object):
 				return None, None
 
 			imageData = self.generate_depth_image(depthData, bestBid, bestAsk, lastPrice)
+			if uploadMode:
+				bucket.blob("uploads/{}.png".format(int(time.time() * 1000))).upload_from_string(base64.decodebytes(imageData))
 
 			return imageData, None
 		except Exception:
 			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception(user=ticker.id)
 			return None, None
 
 	def request_iexc_depth(self, request):
 		ticker = request.get_ticker()
 		exchange = request.get_exchange()
+
+		imageStyle = request.get_image_style()
+		forceMode = "force" in imageStyle and request.authorId == 361916376069439490
+		uploadMode = "upload" in imageStyle and request.authorId == 361916376069439490
 
 		try:
 			try:
@@ -641,6 +603,7 @@ class QuoteProcessor(object):
 				depthData = stock.get_book()[ticker.id]
 				rawData = stock.get_quote().loc[ticker.id]
 				if ticker.quote is None and exchange is not None: return None, "Orderbook visualization for `{}` is only available on `{}`.".format(ticker.id, rawData["primaryExchange"])
+				depthData = {"bids": [[e.get("price"), e.get("size")] for e in depthData["bids"]], "asks": [[e.get("price"), e.get("size")] for e in depthData["asks"]]}
 				bestBid = depthData["bids"][0]
 				bestAsk = depthData["asks"][0]
 				lastPrice = (bestBid[0] + bestAsk[0]) / 2
@@ -648,11 +611,13 @@ class QuoteProcessor(object):
 				return None, None
 
 			imageData = self.generate_depth_image(depthData, bestBid, bestAsk, lastPrice)
+			if uploadMode:
+				bucket.blob("uploads/{}.png".format(int(time.time() * 1000))).upload_from_string(base64.decodebytes(imageData))
 
 			return imageData, None
 		except Exception:
 			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception(user=ticker.id)
 			return None, None
 
 	def generate_depth_image(self, depthData, bestBid, bestAsk, lastPrice):

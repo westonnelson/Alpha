@@ -15,7 +15,7 @@ from DatabaseConnector import DatabaseConnector
 from helpers.utils import Utils
 
 
-class Alpha(discord.Client):
+class Alpha(discord.AutoShardedClient):
 	accountProperties = DatabaseConnector(mode="account")
 
 	def prepare(self):
@@ -23,7 +23,7 @@ class Alpha(discord.Client):
 
 		"""
 
-		self.logging = error_reporting.Client()
+		self.logging = error_reporting.Client(service="discord_manager")
 
 	async def on_ready(self):
 		"""Initiates all Discord dependent functions and flags the bot as ready to process requests
@@ -33,7 +33,8 @@ class Alpha(discord.Client):
 		self.alphaGuild = client.get_guild(414498292655980583)
 		self.proRoles = [
 			discord.utils.get(self.alphaGuild.roles, id=484387309303758848), # Alpha Pro role
-			discord.utils.get(self.alphaGuild.roles, id=647824289923334155)  # Registered Alpha Account role
+			discord.utils.get(self.alphaGuild.roles, id=593768473277104148), # Ichibot role
+			discord.utils.get(self.alphaGuild.roles, id=647824289923334155)  # Registered role
 		]
 
 		print("[Startup]: Alpha Manager is online")
@@ -47,12 +48,7 @@ class Alpha(discord.Client):
 			Member object passed by discord.py
 		"""
 
-		try:
-			await self.update_alpha_guild_roles(only=member.id)
-		except asyncio.CancelledError: pass
-		except Exception:
-			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+		await self.update_alpha_guild_roles(only=member.id)
 
 	async def update_alpha_guild_roles(self, only=None):
 		"""Updates Alpha community guild roles
@@ -61,27 +57,41 @@ class Alpha(discord.Client):
 
 		try:
 			if not await self.accountProperties.check_status(): return
+			accounts = await self.accountProperties.keys()
+			matches = {value: key for key, value in accounts.items()}
 
 			for member in self.alphaGuild.members:
 				if only is not None and only != member.id: continue
 
-				await asyncio.sleep(0.1)
-				accountId = await self.accountProperties.match(member.id)
+				accountId = matches.get(str(member.id))
 
 				if accountId is not None:
+					await asyncio.sleep(0.25)
 					properties = await self.accountProperties.get(accountId)
+					if properties is None: continue
 					
-					if self.proRoles[1] not in member.roles:
-						await member.add_roles(self.proRoles[1])
+					if self.proRoles[2] not in member.roles:
+						try: await member.add_roles(self.proRoles[2])
+						except: pass
+
+					if len(properties["apiKeys"].keys()) != 0:
+						if self.proRoles[1] not in member.roles:
+							try: await member.add_roles(self.proRoles[1])
+							except: pass
+					elif self.proRoles[1] in member.roles:
+						try: await member.remove_roles(self.proRoles[1])
+						except: pass
 
 					if properties["customer"]["personalSubscription"].get("plan", "free") != "free":
 						if self.proRoles[0] not in member.roles:
 							await member.add_roles(self.proRoles[0])
 					elif self.proRoles[0] in member.roles:
-						await member.remove_roles(self.proRoles[0])
+						try: await member.remove_roles(self.proRoles[0])
+						except: pass
 
-				elif self.proRoles[0] in member.roles or self.proRoles[1] in member.roles:
-					await member.remove_roles(self.proRoles[0], self.proRoles[1])
+				elif self.proRoles[0] in member.roles or self.proRoles[2] in member.roles:
+					try: await member.remove_roles(self.proRoles[0], self.proRoles[2])
+					except: pass
 
 		except asyncio.CancelledError: pass
 		except Exception:
@@ -103,7 +113,7 @@ class Alpha(discord.Client):
 				t = datetime.datetime.now().astimezone(pytz.utc)
 				timeframes = Utils.get_accepted_timeframes(t)
 
-				if "5m" in timeframes:
+				if "15m" in timeframes:
 					await self.update_alpha_guild_roles()
 			except asyncio.CancelledError: return
 			except Exception:
@@ -116,7 +126,7 @@ class Alpha(discord.Client):
 # -------------------------
 
 def handle_exit():
-	client.loop.run_until_complete(client.logout())
+	client.loop.run_until_complete(client.close())
 	for t in asyncio.all_tasks(loop=client.loop):
 		if t.done():
 			try: t.exception()
@@ -153,7 +163,8 @@ if __name__ == "__main__":
 			handle_exit()
 			client.loop.close()
 			break
-		except:
+		except Exception:
+			print(traceback.format_exc())
 			handle_exit()
 
 		client = Alpha(loop=client.loop, status=discord.Status.invisible)

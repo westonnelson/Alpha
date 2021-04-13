@@ -1,20 +1,7 @@
 import math
-from ccxt.base import decimal_to_precision as dtp
 
 
 class Utils(object):
-	@staticmethod
-	def format_price(exchange, symbol, price):
-		precision = 8 if (exchange.markets[symbol]["precision"]["price"] is None if "price" in exchange.markets[symbol]["precision"] else True) else exchange.markets[symbol]["precision"]["price"]
-		price = float(dtp.decimal_to_precision(price, rounding_mode=dtp.ROUND, precision=precision, counting_mode=exchange.precisionMode, padding_mode=dtp.PAD_WITH_ZERO))
-		return ("{:,.%df}" % Utils.num_of_decimal_places(exchange, price, precision)).format(price)
-
-	@staticmethod
-	def format_amount(exchange, symbol, amount):
-		precision = exchange.markets[symbol]["precision"]["amount"]
-		amount = float(dtp.decimal_to_precision(amount, rounding_mode=dtp.TRUNCATE, precision=precision, counting_mode=exchange.precisionMode, padding_mode=dtp.NO_PADDING))
-		return ("{:,.%df}" % Utils.num_of_decimal_places(exchange, amount, precision)).format(amount)
-
 	@staticmethod
 	def num_of_decimal_places(exchange, price, precision):
 		if exchange.id in ["bitmex", "ftx"]:

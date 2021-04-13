@@ -12,6 +12,7 @@ from threading import Thread
 import requests
 
 import ccxt
+from ccxt.base import decimal_to_precision as dtp
 from pycoingecko import CoinGeckoAPI
 from google.cloud import error_reporting
 
@@ -39,7 +40,7 @@ class TickerParserServer(object):
 		signal.signal(signal.SIGINT, self.exit_gracefully)
 		signal.signal(signal.SIGTERM, self.exit_gracefully)
 
-		self.logging = error_reporting.Client()
+		self.logging = error_reporting.Client(service="parser")
 
 		TickerParserServer.refresh_coingecko_index()
 		processes = [
@@ -68,7 +69,9 @@ class TickerParserServer(object):
 		while self.isServiceAvailable:
 			try:
 				response = None
-				origin, delimeter, service, request = self.socket.recv_multipart()
+				message = self.socket.recv_multipart()
+				if len(message) != 4: self.logging.report(str(message))
+				origin, delimeter, service, request = message
 				request = pickle.loads(zlib.decompress(request))
 
 				if service == b"find_exchange":
@@ -84,8 +87,8 @@ class TickerParserServer(object):
 					(ticker) = request
 					response = TickerParserServer.find_coingecko_crypto_market(ticker)
 				elif service == b"find_iexc_market":
-					(ticker) = request
-					response = TickerParserServer.find_iexc_market(ticker)
+					(ticker, exchange) = request
+					response = TickerParserServer.find_iexc_market(ticker, exchange)
 				elif service == b"find_quandl_market":
 					(ticker) = request
 					response = TickerParserServer.find_quandl_market(ticker)
@@ -98,11 +101,17 @@ class TickerParserServer(object):
 				elif service == b"get_listings":
 					(ticker) = request
 					response = TickerParserServer.get_listings(ticker)
+				elif service == b"get_formatted_price":
+					(exchange, symbol, price) = request
+					response = TickerParserServer.format_price(exchange, symbol, price)
+				elif service == b"get_formatted_amount":
+					(exchange, symbol, price) = request
+					response = TickerParserServer.format_amount(exchange, symbol, price)
 
 			except (KeyboardInterrupt, SystemExit): return
 			except Exception:
 				print(traceback.format_exc())
-				if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+				if os.environ["PRODUCTION_MODE"]: self.logging.report_exception(user=f"{request}")
 			finally:
 				try: self.socket.send_multipart([origin, delimeter, zlib.compress(pickle.dumps(response, -1))])
 				except: pass
@@ -116,10 +125,10 @@ class TickerParserServer(object):
 
 				if "1h" in timeframes:
 					TickerParserServer.refresh_ccxt_index()
-				if "1D" in timeframes:
-					TickerParserServer.refresh_iexc_index()
 					TickerParserServer.refresh_coingecko_index()
 					TickerParserServer.refresh_coingecko_exchange_rates()
+				if "1D" in timeframes:
+					TickerParserServer.refresh_iexc_index()
 
 			except Exception:
 				print(traceback.format_exc())
@@ -151,7 +160,7 @@ class TickerParserServer(object):
 			if platform not in sortedIndexReference: sortedIndexReference[platform] = {}
 			for exchange in supported.cryptoExchanges[platform]:
 				if exchange not in completedTasks:
-					if exchange not in TickerParserServer.exchanges: TickerParserServer.exchanges[exchange] = Exchange(exchange)
+					if exchange not in TickerParserServer.exchanges: TickerParserServer.exchanges[exchange] = Exchange(exchange, "crypto" if exchange in ccxt.exchanges else "traditional")
 					try: TickerParserServer.exchanges[exchange].properties.load_markets()
 					except: continue
 					completedTasks.add(exchange)
@@ -180,24 +189,46 @@ class TickerParserServer(object):
 			for base in sortedIndexReference[platform]:
 				if base not in TickerParserServer.ccxtIndex[platform]: TickerParserServer.ccxtIndex[platform][base] = []
 				TickerParserServer.ccxtIndex[platform][base] = sorted(sortedIndexReference[platform][base].keys(), key=lambda quote: sortedIndexReference[platform][base][quote])
-				try: TickerParserServer.ccxtIndex[platform][base].insert(1 if TickerParserServer.ccxtIndex[platform][base][0] == "BTC" and base not in ["ETH", "XRP", "BCH", "LTC"] else 0, TickerParserServer.ccxtIndex[platform][base].pop(TickerParserServer.ccxtIndex[platform][base].index("USDT")))
+				# try: TickerParserServer.ccxtIndex[platform][base].insert(1 if TickerParserServer.ccxtIndex[platform][base][0] == "BTC" and base not in ["ETH", "XRP", "BCH", "LTC"] else 0, TickerParserServer.ccxtIndex[platform][base].pop(TickerParserServer.ccxtIndex[platform][base].index("USDT")))
+				# except: pass
+				# try: TickerParserServer.ccxtIndex[platform][base].insert(1 if TickerParserServer.ccxtIndex[platform][base][0] == "BTC" and base not in ["ETH", "XRP", "BCH", "LTC"] else 0, TickerParserServer.ccxtIndex[platform][base].pop(TickerParserServer.ccxtIndex[platform][base].index("USD")))
+				# except: pass
+				try: TickerParserServer.ccxtIndex[platform][base].insert(0, TickerParserServer.ccxtIndex[platform][base].pop(TickerParserServer.ccxtIndex[platform][base].index("USDT")))
 				except: pass
-				try: TickerParserServer.ccxtIndex[platform][base].insert(1 if TickerParserServer.ccxtIndex[platform][base][0] == "BTC" and base not in ["ETH", "XRP", "BCH", "LTC"] else 0, TickerParserServer.ccxtIndex[platform][base].pop(TickerParserServer.ccxtIndex[platform][base].index("USD")))
+				try: TickerParserServer.ccxtIndex[platform][base].insert(0, TickerParserServer.ccxtIndex[platform][base].pop(TickerParserServer.ccxtIndex[platform][base].index("USD")))
 				except: pass
 
 	@staticmethod
 	def refresh_coingecko_index():
 		try:
-			blacklist = ["UNIUSD", "AAPL"]
-			indexReference, i = {}, 0
+			blacklist = ["UNIUSD", "AAPL", "TSLA"]
+			rawData = []
+			indexReference, page = {}, 1
 			while True:
-				i += 1
-				rawData = TickerParserServer.coinGecko.get_coins_markets(vs_currency="btc", order="market_cap_desc", per_page=250, page=i)
-				if len(rawData) == 0: break
-				for e in rawData:
-					if e["symbol"].upper() not in indexReference and e["symbol"].upper() not in blacklist:
-						indexReference[e["symbol"].upper()] = {"id": e["id"], "name": e["name"], "base": e["symbol"], "quote": "BTC", "image": e["image"], "market_cap_rank": e["market_cap_rank"]}
+				try:
+					response = TickerParserServer.coinGecko.get_coins_markets(vs_currency="usd", order="id_asc", per_page=250, page=page)
+				except:
+					print(traceback.format_exc())
+					time.sleep(10)
+					continue
+
+				if len(response) == 0: break
+				rawData += response
+				page += 1
+
+			rawData.sort(reverse=True, key=lambda k: (float('-inf') if k["market_cap_rank"] is None else -k["market_cap_rank"], 0 if k["total_volume"] is None else k["total_volume"], k["name"], k["id"]))
+			for e in rawData:
+				symbol = e["symbol"].upper()
+				if symbol in blacklist: continue
+				if symbol not in indexReference:
+					indexReference[symbol] = {"id": e["id"], "name": e["name"], "base": symbol, "quote": "USD", "image": e["image"], "market_cap_rank": e["market_cap_rank"]}
+				elif indexReference[symbol]["id"] != e["id"]:
+					for i in range(2, 11):
+						adjustedSymbol = "{}:{}".format(symbol, i)
+						if adjustedSymbol not in indexReference:
+							indexReference[adjustedSymbol] = {"id": e["id"], "name": e["name"], "base": adjustedSymbol, "quote": "USD", "image": e["image"], "market_cap_rank": e["market_cap_rank"]}
 			TickerParserServer.coinGeckoIndex = indexReference
+
 		except Exception:
 			print(traceback.format_exc())
 
@@ -220,9 +251,15 @@ class TickerParserServer(object):
 			exchanges = requests.get("https://cloud.iexapis.com/stable/ref-data/market/us/exchanges?token={}".format(os.environ["IEXC_KEY"])).json()
 			for exchange in exchanges:
 				if exchange["refId"] == "": continue
-				exchangeId = exchange["refId"].lower()
-				iexcExchanges.add(exchangeId)
-				TickerParserServer.exchanges[exchangeId] = Exchange(exchangeId, exchange["longName"])
+				exchangeId = exchange["refId"]
+				iexcExchanges.add(exchangeId.lower())
+				TickerParserServer.exchanges[exchangeId.lower()] = Exchange(exchangeId, "traditional", exchange["longName"], region="us")
+			exchanges = requests.get("https://cloud.iexapis.com/stable/ref-data/exchanges?token={}".format(os.environ["IEXC_KEY"])).json()
+			for exchange in exchanges:
+				exchangeId = exchange["exchange"]
+				if exchangeId.lower() in iexcExchanges: continue
+				iexcExchanges.add(exchangeId.lower())
+				TickerParserServer.exchanges[exchangeId.lower()] = Exchange(exchangeId, "traditional", exchange["description"], region=exchange["region"])
 			
 			difference = set(iexcExchanges).symmetric_difference(supported.iexcExchanges)
 			newSupportedExchanges = []
@@ -236,7 +273,8 @@ class TickerParserServer(object):
 			if len(unsupportedCryptoExchanges) != 0: print("New deprecated IEXC exchanges: {}".format(unsupportedCryptoExchanges))
 
 			for exchangeId in supported.traditionalExchanges["IEXC"]:
-				symbols = requests.get("https://cloud.iexapis.com/stable/ref-data/exchange/{}/symbols?token={}".format(exchangeId, os.environ["IEXC_KEY"])).json()
+				symbols = requests.get("https://cloud.iexapis.com/stable/ref-data/exchange/{}/symbols?token={}".format(TickerParserServer.exchanges[exchangeId].id, os.environ["IEXC_KEY"])).json()
+				if len(symbols) == 0: print("No symbols found on {}".format(exchangeId))
 				for symbol in symbols:
 					tickerId = symbol["symbol"]
 					if tickerId not in TickerParserServer.iexcStocksIndex:
@@ -268,7 +306,7 @@ class TickerParserServer(object):
 			"crypto": {
 				"binance": ["bin", "bi", "b"],
 				"bitmex": ["bmx", "mex", "btmx", "bx"],
-				"binancefutures": ["binancef", "fbin", "binf", "bif", "bf"],
+				"binancefutures": ["binancef", "fbin", "binf", "bif", "bf", "bnf"],
 				"coinbasepro": ["cbp", "coin", "base", "cb", "coinbase", "coinbasepro", "cbpro"],
 				"bitfinex2": ["bfx", "finex", "bf"],
 				"bittrex": ["btrx", "brx"],
@@ -279,6 +317,11 @@ class TickerParserServer(object):
 			},
 			"traditional": {}
 		}
+
+		if platform in ["TradingLite", "Bookmap", "GoCharting", "LLD", "CoinGecko", "CCXT", "Ichibot"]:
+			bias = "crypto"
+		elif platform in ["IEXC", "Quandl"]:
+			bias = "traditional"
 
 		if bias == "crypto":
 			for exchangeId in supported.cryptoExchanges[platform]:
@@ -391,21 +434,18 @@ class TickerParserServer(object):
 				"CCXT": [
 					(Ticker("BTCUSD", "XBTUSD", "BTC", "USD", "BTC/USD", hasParts=False, mcapRank=1), TickerParserServer.exchanges["bitmex"], ["XBT", "XBTUSD"])
 				],
-				"Alpha Paper Trader": [
-					(Ticker("BTCUSD", "XBTUSD", "BTC", "USD", "BTC/USD", hasParts=False, mcapRank=1), TickerParserServer.exchanges["bitmex"], ["XBT", "XBTUSD"])
-				],
 				"Ichibot": [
 					(Ticker("BTCUSD", "XBTUSD", "BTC", "USD", "BTC/USD", hasParts=False, mcapRank=1), TickerParserServer.exchanges["bitmex"], ["XBT", "XBTUSD"])
 				]
 			}
 
-			if platform in ["TradingLite", "Bookmap", "GoCharting", "LLD", "CoinGecko", "CCXT", "Alpha Paper Trader", "Ichibot"]:
+			if platform in ["TradingLite", "Bookmap", "GoCharting", "LLD", "CoinGecko", "CCXT", "Ichibot"]:
 				bias = "crypto"
 			elif platform in ["IEXC", "Quandl"]:
 				bias = "traditional"
 
 			parsedTicker, parsedExchange = None, None
-			forceMatch = platform in ["LLD", "CoinGecko", "CCXT", "Alpha Paper Trader", "IEXC", "Quandl"]
+			forceMatch = platform in ["LLD", "CoinGecko", "CCXT", "IEXC", "Quandl"]
 
 			if bias == "crypto":
 				for tickerOverride, exchangeOverride, triggers in cryptoTickerOverrides.get(platform, []):
@@ -432,8 +472,8 @@ class TickerParserServer(object):
 
 	@staticmethod
 	def find_ccxt_crypto_market(ticker, exchange, platform, defaults):
-		if platform not in supported.cryptoExchanges: return ticker, exchange
-		exchanges = [TickerParserServer.exchanges[e] for e in supported.cryptoExchanges[platform]] if exchange is None else [exchange]
+		if platform not in supported.cryptoExchanges or (exchange is not None and exchange.type != "crypto"): return ticker, exchange
+		exchanges = [TickerParserServer.exchanges[e] for e in supported.cryptoExchanges[platform] if TickerParserServer.exchanges[e].type == "crypto"] if exchange is None else [exchange]
 		if exchange is None and defaults["exchange"] is not None: exchanges.insert(0, TickerParserServer.exchanges[defaults["exchange"]])
 
 		for e in exchanges:
@@ -487,29 +527,33 @@ class TickerParserServer(object):
 
 	@staticmethod
 	def find_coingecko_crypto_market(ticker):
+		split = ticker.id.split(":")
+		if len(split) == 2:
+			tickerId, rank = split[0], "" if split[1] == "1" else ":{}".format(split[1])
+		elif len(split) == 3:
+			tickerId, rank = split[0] + split[2], "" if split[1] == "1" else ":{}".format(split[1])
+		else:
+			tickerId, rank = ticker.id, ""
+
 		if ticker.id in TickerParserServer.coinGeckoIndex:
-			if ticker.id in TickerParserServer.ccxtIndex["CCXT"]:
-				quote = TickerParserServer.ccxtIndex["CCXT"][ticker.id][0]
-				return Ticker("{}{}".format(ticker.id, quote), "{}{}".format(ticker.id, quote), ticker.id, quote, TickerParserServer.coinGeckoIndex[ticker.id]["id"], hasParts=False, mcapRank=TickerParserServer.coinGeckoIndex[ticker.id]["market_cap_rank"]), None
-			else:
-				return Ticker("{}BTC".format(ticker.id), "{}BTC".format(ticker.id), ticker.id, "BTC", TickerParserServer.coinGeckoIndex[ticker.id]["id"], hasParts=False, mcapRank=TickerParserServer.coinGeckoIndex[ticker.id]["market_cap_rank"]), None
+			return Ticker("{}USD".format(tickerId), "{}USD".format(tickerId), ticker.id, "USD", TickerParserServer.coinGeckoIndex[ticker.id]["id"], hasParts=False, mcapRank=TickerParserServer.coinGeckoIndex[ticker.id]["market_cap_rank"]), None
 
 		else:
 			for base in TickerParserServer.coinGeckoIndex:
 				if ticker.id.startswith(base):
 					for quote in TickerParserServer.coingeckoVsCurrencies:
-						if ticker.id == "{}{}".format(base, quote):
-							return Ticker(ticker.id, ticker.id, base, quote, TickerParserServer.coinGeckoIndex[base]["id"], hasParts=False, mcapRank=TickerParserServer.coinGeckoIndex[base]["market_cap_rank"]), None
+						if tickerId == "{}{}".format(base, quote) and base + rank in TickerParserServer.coinGeckoIndex:
+							return Ticker(tickerId, tickerId, base + rank, quote, TickerParserServer.coinGeckoIndex[base + rank]["id"], hasParts=False, mcapRank=TickerParserServer.coinGeckoIndex[base + rank]["market_cap_rank"]), None
 
 			for base in TickerParserServer.coinGeckoIndex:
-				if base.startswith(ticker.id):
-					return Ticker("{}BTC".format(base), "{}BTC".format(base), base, "BTC", TickerParserServer.coinGeckoIndex[base]["id"], hasParts=False, mcapRank=TickerParserServer.coinGeckoIndex[base]["market_cap_rank"]), None
+				if base.startswith(tickerId) and base + rank in TickerParserServer.coinGeckoIndex:
+					return Ticker("{}USD".format(base), "{}USD".format(base), base + rank, "USD", TickerParserServer.coinGeckoIndex[base + rank]["id"], hasParts=False, mcapRank=TickerParserServer.coinGeckoIndex[base + rank]["market_cap_rank"]), None
 
 			for base in TickerParserServer.coinGeckoIndex:
-				if ticker.id.endswith(base):
+				if tickerId.endswith(base) and base + rank in TickerParserServer.coinGeckoIndex:
 					for quote in TickerParserServer.coingeckoVsCurrencies:
-						if ticker.id == "{}{}".format(quote, base):
-							return Ticker(ticker.id, ticker.id, quote, base, TickerParserServer.coinGeckoIndex[base]["id"], hasParts=False, mcapRank=TickerParserServer.coinGeckoIndex[base]["market_cap_rank"], isReversed=True), None
+						if tickerId == "{}{}".format(quote, base):
+							return Ticker(tickerId, tickerId, quote, base + rank, TickerParserServer.coinGeckoIndex[base + rank]["id"], hasParts=False, mcapRank=TickerParserServer.coinGeckoIndex[base + rank]["market_cap_rank"], isReversed=True), None
 
 		return None, None
 
@@ -573,6 +617,20 @@ class TickerParserServer(object):
 					response.append((quote, listings.pop(quote)))
 
 		return response, total
+
+	@staticmethod
+	def format_price(exchangeId, symbol, price):
+		exchange = TickerParserServer.exchanges[exchangeId].properties
+		precision = exchange.markets.get(symbol, {}).get("precision", {}).get("price", 8)
+		price = float(dtp.decimal_to_precision(price, rounding_mode=dtp.ROUND, precision=precision, counting_mode=exchange.precisionMode, padding_mode=dtp.PAD_WITH_ZERO))
+		return ("{:,.%df}" % Utils.num_of_decimal_places(exchange, price, precision)).format(price)
+
+	@staticmethod
+	def format_amount(exchangeId, symbol, amount):
+		exchange = TickerParserServer.exchanges[exchangeId].properties
+		precision = exchange.markets.get(symbol, {}).get("precision", {}).get("amount", 8)
+		amount = float(dtp.decimal_to_precision(amount, rounding_mode=dtp.TRUNCATE, precision=precision, counting_mode=exchange.precisionMode, padding_mode=dtp.NO_PADDING))
+		return ("{:,.%df}" % Utils.num_of_decimal_places(exchange, amount, precision)).format(amount)
 
 
 if __name__ == "__main__":

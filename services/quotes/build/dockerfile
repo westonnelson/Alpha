@@ -7,10 +7,11 @@ WORKDIR /usr/src/quote-server
 COPY ./services/quotes/build/requirements.txt ./services/quotes/entrypoint.sh ./
 RUN pip install -r ./requirements.txt
 
-COPY ./libraries ./libraries
-RUN pip install ./libraries/requests
-RUN pip install ./libraries/parser
-RUN pip install ./libraries/cache
+RUN mkdir ./dependencies
+COPY ./libraries/parser ./dependencies/parser
+RUN pip install ./dependencies/parser
+COPY ./libraries/requests ./dependencies/requests
+RUN pip install ./dependencies/requests
 
 # Copy source code
 COPY ./services/quotes/app ./app

@@ -18,7 +18,6 @@ class DetailRequestHandler(object):
 		self.parserBias = "traditional" if messageRequest is None else messageRequest.marketBias
 		
 		self.isDelayed = not isPro
-		self.isMarketAlert = kwargs.get("isMarketAlert", False)
 
 		self.currentPlatform = self.platforms[0]
 
@@ -186,10 +185,9 @@ class DetailRequest(object):
 		for i in range(len(self.ticker.parts)):
 			part = self.ticker.parts[i]
 			if type(part) is str: continue
-			updatedTicker, updatedExchange = TickerParser.process_known_tickers(part, None, self.platform, defaults, bias)
+			updatedTicker, _ = TickerParser.process_known_tickers(part, None, self.platform, defaults, bias)
 			if updatedTicker is not None:
 				self.ticker.parts[i] = updatedTicker
-				if not self.ticker.isAggregatedTicker: self.exchange = updatedExchange
 			else:
 				self.shouldFail = True
 		self.ticker.update_ticker_id()

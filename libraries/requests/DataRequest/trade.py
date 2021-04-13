@@ -18,7 +18,6 @@ class TradeRequestHandler(object):
 		self.parserBias = "traditional" if messageRequest is None else messageRequest.marketBias
 		
 		self.isDelayed = not isPro
-		self.isMarketAlert = kwargs.get("isMarketAlert", False)
 
 		self.currentPlatform = self.platforms[0]
 
@@ -109,14 +108,9 @@ class TradeRequestHandler(object):
 
 	def find_caveats(self):
 		for platform, request in self.requests.items():
-			if platform == "Alpha Paper Trader":
-				if request.ticker.id is not None:
-					if len(request.numericalParameters) == 0: request.set_error("Paper trade amount was not provided.")
-					elif len(request.numericalParameters) > 2: request.set_error("Too many numerical arguments provided.")
-				else:
-					if len(request.numericalParameters) != 0: request.set_error("Numerical arguments can't be used with this command.")
-			elif platform == "Ichibot":
-				pass
+			if platform == "Ichibot":
+				if request.exchange is None:
+					request.exchange = TickerParser.find_exchange("ftx", platform, request.parserBias)[1]
 
 	def requires_pro(self):
 		return self.requests[self.currentPlatform].requiresPro
@@ -136,8 +130,7 @@ class TradeRequestHandler(object):
 		if platform not in self.requests: return None
 		ticker = self.requests[platform].ticker
 
-		if platform == "Alpha Paper Trader": pass
-		elif platform == "Ichibot": pass
+		if platform == "Ichibot": pass
 
 		return ticker
 
@@ -145,8 +138,7 @@ class TradeRequestHandler(object):
 		if platform not in self.requests: return None
 		exchange = self.requests[platform].exchange
 
-		if platform == "Alpha Paper Trader": pass
-		elif platform == "Ichibot": pass
+		if platform == "Ichibot": pass
 
 		return exchange
 
@@ -173,11 +165,7 @@ class TradeRequestHandler(object):
 class TradeRequest(object):
 	requestParameters = {
 		"filters": [
-			Parameter("isAmountPercent", "percentage amount", ["%"], paper=True),
-			Parameter("isPricePercent", "percentage price", ["%"], paper=True),
-			Parameter("isLimitOrder", "limit order", ["@", "at"], paper=True),
-			Parameter("isReduceOnlyMode", "reduce only option", ["reduce"], paper=True),
-			Parameter("autoDeleteOverride", "autodelete", ["del", "delete", "autodelete"], paper=True, ichibot=True)
+			Parameter("autoDeleteOverride", "autodelete", ["del", "delete", "autodelete"], ichibot=True)
 		]
 	}
 
@@ -199,9 +187,6 @@ class TradeRequest(object):
 		self.errorIsFatal = False
 
 		self.__defaultParameters = {
-			"Alpha Paper Trader": {
-				"filters": []
-			},
 			"Ichibot": {
 				"filters": []
 			}

@@ -30,8 +30,8 @@ spec:
             readOnly: true
         resources:
           requests:
-            memory: "55Mi"
-            cpu: "20m"
+            memory: "50Mi"
+            cpu: "10m"
       volumes:
         - name: alpha-service-keys
           secret:

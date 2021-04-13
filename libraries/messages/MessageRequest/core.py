@@ -95,10 +95,7 @@ class MessageRequest(object):
 	# -------------------------
 
 	def is_serverwide_pro_used(self):
-		return self.serverwide_ads_disabled() or self.serverwide_price_alerts_available() or self.serverwide_command_presets_available() or self.serverwide_flow_available() or self.serverwide_statistics_available()
-
-	def serverwide_ads_disabled(self):
-		return self.guildProperties["addons"]["noads"]["enabled"]
+		return self.serverwide_price_alerts_available() or self.serverwide_command_presets_available() or self.serverwide_flow_available() or self.serverwide_statistics_available()
 
 	def serverwide_price_alerts_available(self):
 		return self.guildProperties["addons"]["marketAlerts"]["enabled"]
@@ -116,9 +113,6 @@ class MessageRequest(object):
 	# -------------------------
 	# Global properties
 	# -------------------------
-
-	def ads_disabled(self):
-		return self.serverwide_ads_disabled()
 
 	def price_alerts_available(self):
 		return self.serverwide_price_alerts_available() or self.personal_price_alerts_available()
@@ -142,9 +136,6 @@ class MessageRequest(object):
 		settingsTemplate = {
 			"addons": {
 				"satellites": {
-					"enabled": False
-				},
-				"noads": {
 					"enabled": False
 				},
 				"marketAlerts": {

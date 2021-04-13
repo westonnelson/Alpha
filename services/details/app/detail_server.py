@@ -15,7 +15,6 @@ from google.cloud import firestore, error_reporting
 from markdownify import markdownify as md
 
 from Cache import Cache
-from TickerParser import TickerParser
 
 
 database = firestore.Client()
@@ -29,7 +28,7 @@ class DetailProcessor(object):
 		signal.signal(signal.SIGINT, self.exit_gracefully)
 		signal.signal(signal.SIGTERM, self.exit_gracefully)
 
-		self.logging = error_reporting.Client()
+		self.logging = error_reporting.Client(service="details_server")
 		self.cache = Cache(ttl=60)
 
 		context = zmq.Context.instance()
@@ -49,7 +48,7 @@ class DetailProcessor(object):
 				response = None, None
 				origin, delimeter, clientId, service, request = self.socket.recv_multipart()
 				request = pickle.loads(zlib.decompress(request))
-				if request.timestamp + 30 < time.time(): continue
+				if request.timestamp + 60 < time.time(): continue
 
 				if service == b"detail":
 					response = self.request_detail(request)
@@ -90,7 +89,7 @@ class DetailProcessor(object):
 							"id": request.requests[platform].ticker.id,
 							"bias": request.parserBias
 						},
-						"exchange": None if request.requests[platform].exchange is None else request.requests[platform].exchange.id
+						"exchange": None
 					})
 				return payload, updatedTradeMessage
 			elif updatedTradeMessage is not None:
@@ -103,57 +102,61 @@ class DetailProcessor(object):
 
 		try:
 			try:
-				companyData = self.coinGecko.get_coin_by_id(id=ticker.symbol, localization="false", tickers=False, market_data=True, community_data=True, developer_data=True)
+				assetData = self.coinGecko.get_coin_by_id(id=ticker.symbol, localization="false", tickers=False, market_data=True, community_data=True, developer_data=True)
+				historicData = self.coinGecko.get_coin_ohlc_by_id(id=ticker.symbol, vs_currency="usd", days=365)
 			except:
 				return None, None
 
-			description = md(companyData["description"].get("en", "No description"))
+			description = md(assetData["description"].get("en", "No description"))
 			descriptionParagraphs = description.split("\r\n\r\n")
 			textLength = [len(descriptionParagraphs[0])]
 			for i in range(1, len(descriptionParagraphs)):
 				nextLength = textLength[-1] + len(descriptionParagraphs[i])
-				if nextLength > 1000: break
+				if nextLength > 500 and textLength[-1] > 300: break
 				textLength.append(nextLength)
 			description = "\n".join(descriptionParagraphs[:len(textLength)]) + "\n[Read more on CoinGecko](https://www.coingecko.com/coins/{})".format(ticker.symbol)
 
+			highs = [e[2] for e in historicData]
+			lows = [e[3] for e in historicData]
+
 			payload = {
-				"name": "{} ({})".format(companyData["name"], ticker.base),
+				"name": "{} ({})".format(assetData["name"], ticker.base),
 				"description": description,
-				"url": None if companyData["links"]["homepage"][0] == "" else companyData["links"]["homepage"][0],
-				"rank": companyData["market_data"]["market_cap_rank"],
-				"image": companyData["image"]["large"],
-				"marketcap": None if companyData["market_data"]["market_cap"] is None else companyData["market_data"]["market_cap"].get("usd"),
-				"volume": None if companyData["market_data"]["total_volume"] is None else companyData["market_data"]["total_volume"].get("usd"),
-				"industry": None,
-				"info": None,
-				"supply": {
-					"total": None if companyData["market_data"]["total_supply"] is None else companyData["market_data"]["total_supply"],
-					"circulating": None if companyData["market_data"]["circulating_supply"] is None else companyData["market_data"]["circulating_supply"]
-				},
+				"rank": assetData["market_data"]["market_cap_rank"],
+				"image": assetData["image"]["large"],
+				"supply": {},
 				"score": {
-					"developer": companyData["developer_score"],
-					"community": companyData["community_score"],
-					"liquidity": companyData["liquidity_score"],
-					"public interest": companyData["public_interest_score"]
+					"developer": assetData["developer_score"],
+					"community": assetData["community_score"],
+					"liquidity": assetData["liquidity_score"],
+					"public interest": assetData["public_interest_score"]
 				},
 				"price": {
-					"current": companyData["market_data"]["current_price"].get("usd"),
-					"ath": companyData["market_data"]["ath"].get("usd"),
-					"atl": companyData["market_data"]["atl"].get("usd"),
-					"per": None
+					"current": assetData["market_data"]["current_price"].get("usd"),
+					"ath": assetData["market_data"]["ath"].get("usd"),
+					"atl": assetData["market_data"]["atl"].get("usd")
 				},
 				"change": {
-					"past day": companyData["market_data"]["price_change_percentage_24h_in_currency"].get("usd"),
-					"past month": companyData["market_data"]["price_change_percentage_30d_in_currency"].get("usd"),
-					"past year": companyData["market_data"]["price_change_percentage_1y_in_currency"].get("usd")
+					"past day": assetData["market_data"]["price_change_percentage_24h_in_currency"].get("usd"),
+					"past month": assetData["market_data"]["price_change_percentage_30d_in_currency"].get("usd"),
+					"past year": assetData["market_data"]["price_change_percentage_1y_in_currency"].get("usd")
 				},
 				"sourceText": "from CoinGecko",
 				"platform": "CoinGecko",
 			}
+
+			if assetData["links"]["homepage"][0] != "": payload["url"] = (assetData["links"]["homepage"][0] if assetData["links"]["homepage"][0].startswith("http") else "https://" + assetData["links"]["homepage"][0]).replace(" ", "")
+			if assetData["market_data"]["total_volume"] is not None: payload["volume"] = assetData["market_data"]["total_volume"].get("usd")
+			if assetData["market_data"]["market_cap"] is not None: payload["marketcap"] = assetData["market_data"]["market_cap"].get("usd")
+			if assetData["market_data"]["total_supply"] is not None: payload["supply"]["total"] = assetData["market_data"]["total_supply"]
+			if assetData["market_data"]["circulating_supply"] is not None: payload["supply"]["circulating"] = assetData["market_data"]["circulating_supply"]
+			if len(highs) != 0: payload["price"]["1y high"] = max(highs)
+			if len(lows) != 0: payload["price"]["1y low"] = min(lows)
+
 			return payload, None
 		except Exception:
 			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception(user=ticker.id)
 			return None, None
 	
 	def request_iexc_details(self, request):
@@ -164,6 +167,7 @@ class DetailProcessor(object):
 				stock = Stock(ticker.id, token=os.environ["IEXC_KEY"])
 				companyData = stock.get_company().loc[ticker.id]
 				rawData = stock.get_quote().loc[ticker.id]
+				historicData = stock.get_historical_prices(range="1y")
 			except:
 				return None, None
 
@@ -171,38 +175,36 @@ class DetailProcessor(object):
 			except: coinThumbnail = None
 
 			payload = {
-				"name": "{} ({})".format(companyData["companyName"], companyData["symbol"]),
-				"description": companyData["description"],
-				"url": companyData["website"],
-				"rank": None,
+				"name": companyData["symbol"] if companyData["companyName"] is None else "{} ({})".format(companyData["companyName"], companyData["symbol"]),
 				"image": coinThumbnail,
-				"marketcap": rawData["marketCap"],
-				"volume": None,
 				"industry": companyData["industry"],
 				"info": {
-					"location": "{}{}, {}, {}, {}".format(companyData["address"], "" if companyData["address2"] is None else ", " + companyData["address2"], companyData["city"], companyData["state"], companyData["country"]),
 					"employees": companyData["employees"]
 				},
-				"supply": None,
-				"score": None,
 				"price": {
 					"current": rawData["delayedPrice"] if rawData["latestPrice"] is None else rawData["latestPrice"],
-					"ath": None,
-					"atl": None,
+					"1y high": historicData.high.max(),
+					"1y low": historicData.low.min(),
 					"per": rawData["peRatio"]
 				},
 				"change": {
-					"past day": rawData["changePercent"],
-					"past month": None,
-					"past year": None
+					"past day": ((historicData.close[-1] / historicData.close[-2] - 1) * 100 if historicData.shape[0] >= 2 and historicData.close[-2] != 0 else None) if rawData["changePercent"] is None else rawData["changePercent"] * 100,
+					"past month": (historicData.close[-1] / historicData.close[-21] - 1) * 100 if historicData.shape[0] >= 21 and historicData.close[-21] != 0 else None,
+					"past year": (historicData.close[-1] / historicData.close[0] - 1) * 100 if historicData.shape[0] >= 200 and historicData.close[0] != 0 else None
 				},
 				"sourceText": "provided by IEX Cloud",
 				"platform": "IEX Cloud",
 			}
+
+			if companyData["description"] is not None: payload["description"] = companyData["description"]
+			if "marketCap" in rawData: payload["marketcap"] = rawData["marketCap"]
+			if companyData["website"] is not None: payload["url"] = companyData["website"]
+			if companyData["country"] is not None: payload["info"]["location"] = "{}{}, {}, {}, {}".format(companyData["address"], "" if companyData["address2"] is None else ", " + companyData["address2"], companyData["city"], companyData["state"], companyData["country"])
+
 			return payload, None
 		except Exception:
 			print(traceback.format_exc())
-			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception()
+			if os.environ["PRODUCTION_MODE"]: self.logging.report_exception(user=ticker.id)
 			return None, None
 
 if __name__ == "__main__":
